@@ -78,6 +78,7 @@ Prior versions of Jackett are no longer supported.
  * kickasstorrents.to
  * kickasstorrents.ws
  * Knaben
+ * LaMovie
  * LimeTorrents
  * LinuxTracker
  * Mac Torrents Download
@@ -176,7 +177,6 @@ Prior versions of Jackett are no longer supported.
  * ilDraGoNeRo
  * Kinorun
  * Kinozal
- * LaMovie
  * LostFilm.tv
  * Magnetico (Local DHT) [[site](https://github.com/boramalper/magnetico)]
  * Marine Tracker
