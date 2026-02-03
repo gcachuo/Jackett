@@ -102,6 +102,7 @@ Prior versions of Jackett are no longer supported.
  * PC-torrent
  * Pirate's Paradise
  * plugintorrent
+ * PornoTorrent
  * PornRips
  * Postman
  * RedeTorrent
@@ -239,6 +240,7 @@ Prior versions of Jackett are no longer supported.
  * alingPT
  * AlphaRatio (AR)
  * AmigosShareClub (ASC)
+ * Anime No Sekai (ANSK)
  * AnimeBytes (AB)
  * AnimeTorrents (AnT)
  * AnimeTorrents.ro (Anime Torrents Romania)
@@ -436,6 +438,7 @@ Prior versions of Jackett are no longer supported.
  * Locadora
  * LongPT
  * LosslessClub [![(invite needed)][inviteneeded]](#)
+ * LP-Bits 2.0
  * LST
  * LuckPT [![(invite needed)][inviteneeded]](#)
  * Luminarr
@@ -495,6 +498,7 @@ Prior versions of Jackett are no longer supported.
  * PT GTK
  * PT分享站 (itzmx)
  * PTCafe (咖啡)
+ * PTCC (我的PT)
  * PTerClub (PT之友俱乐部)
  * PTFans
  * PTFiles (PTF)
@@ -558,6 +562,7 @@ Prior versions of Jackett are no longer supported.
  * TeamHD
  * TeamOS
  * TEKNO3D [![(invite needed)][inviteneeded]](#)
+ * The Brothers
  * The Crazy Ones
  * The Empire (TE)
  * The Falling Angels (TFA)
