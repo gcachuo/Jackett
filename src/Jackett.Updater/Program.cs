@@ -407,6 +407,7 @@ namespace Jackett.Updater
                 "Definitions/extratorrentclone.yml",
                 "Definitions/extremetorrents.yml",
                 "Definitions/extremlymtorrents.yml",
+                "Definitions/exttorrents.yml",
                 "Definitions/fantasticheaven.yml",
                 "Definitions/fantastiko.yml",
                 "Definitions/fastscene.yml",
@@ -494,6 +495,7 @@ namespace Jackett.Updater
                 "Definitions/ibit.yml",
                 "Definitions/icc2022.yml",
                 "Definitions/icetorrent.yml", // migrated to C# XtremeZone base tracker
+                "Definitions/idope.yml",
                 "Definitions/idopeclone.yml",
                 "Definitions/ihdbits.yml",
                 "Definitions/ilcorsaroverde.yml",
@@ -543,7 +545,6 @@ namespace Jackett.Updater
                 "Definitions/lusthive.yml",
                 "Definitions/mactorrents.yml",
                 "Definitions/magicheaven.yml",
-                "Definitions/magico.yml", // renamed to trellas
                 "Definitions/magnet4you.yml",
                 "Definitions/magnetdl.yml",
                 "Definitions/maniatorrent.yml",
@@ -598,8 +599,10 @@ namespace Jackett.Updater
                 "Definitions/oncesearch.yml",
                 "Definitions/onlineselfeducation.yml",
                 "Definitions/onlyscene.yml",
+                "Definitions/oscarworld.yml",
                 "Definitions/ostwiki.yml",
                 "Definitions/oxtorrent.yml",
+                "Definitions/oxtorrent-co.yml",
                 "Definitions/oxtorrent-vip.yml",
                 "Definitions/p2pelite.yml",
                 "Definitions/pandahd.yml",
@@ -799,8 +802,9 @@ namespace Jackett.Updater
                 "Definitions/totheglorycookie.yml", // renamed totheglory2fa
                 "Definitions/trackeros-api.yml",
                 "Definitions/trackeros.yml", // switch to *-API #12807
-                "Definitions/tspate.yml",
+                "Definitions/trellas.yml", // renamed to magico
                 "Definitions/trupornolabs.yml",
+                "Definitions/tspate.yml",
                 "Definitions/ttobogo.yml",
                 "Definitions/ttsweb.yml",
                 "Definitions/turknova.yml",
@@ -832,6 +836,7 @@ namespace Jackett.Updater
                 "Definitions/vizuk.yml",
                 "Definitions/vtorrent.yml",
                 "Definitions/waffles.yml",
+                "Definitions/wdt.yml",
                 "Definitions/witchhunter.yml",
                 "Definitions/worldofp2p.yml",
                 "Definitions/worldwidetorrents.yml",
@@ -851,6 +856,8 @@ namespace Jackett.Updater
                 "Definitions/yingk.yml",
                 "Definitions/yggcookie.yml",
                 "Definitions/yggtorrent.yml",
+                "Definitions/yggtorrent-turbo.yml",
+                "Definitions/yoinked.yml",
                 "Definitions/yourbittorrent.yml",
                 "Definitions/yourexotic.yml", // renamed to exoticaz
                 "Definitions/zetorrents.yml", // renamed to world-torrent #7574
