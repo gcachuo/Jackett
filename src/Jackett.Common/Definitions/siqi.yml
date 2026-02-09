@@ -1,34 +1,29 @@
 ---
-id: kamept
-name: KamePT
-description: "KamePT is a CHINESE Private Torrent Tracker for 3X"
+id: siqi
+name: Siqi
+description: "Siqi is a CHINESE Private Tracker for HD image BOOKS and E-BOOKS"
 language: zh-CN
 type: private
 encoding: UTF-8
 links:
-  - https://kamept.com/
+  - https://si-qi.xyz/
 
 caps:
   categorymappings:
-    - {id: 410, cat: XXX, desc: "同人AV"}
-    - {id: 413, cat: XXX, desc: "男娘"}
-    - {id: 414, cat: XXX, desc: "同人VR"}
-    - {id: 417, cat: XXX, desc: "Cosplay套图"}
-    - {id: 419, cat: XXX, desc: "里番"}
-    - {id: 411, cat: XXX, desc: "2D动画"}
-    - {id: 423, cat: XXX, desc: "3D动画"}
-    - {id: 424, cat: XXX/ImageSet, desc: "单行本"}
-    - {id: 435, cat: XXX/ImageSet, desc: "同人志"}
-    - {id: 433, cat: XXX/ImageSet, desc: "画师CG"}
-    - {id: 415, cat: XXX/Other, desc: "游戏"}
-    - {id: 418, cat: XXX/Other, desc: "中文游戏"}
-    - {id: 434, cat: XXX/ImageSet, desc: "游戏CG"}
-    - {id: 420, cat: XXX/Other, desc: "外语音声"}
-    - {id: 421, cat: XXX/Other, desc: "中文音声"}
-    - {id: 422, cat: XXX/Other, desc: "视频音声"}
+    - {id: 411, cat: Books/Comics, desc: "漫画 (Comics)"}
+    - {id: 417, cat: Books/Technical, desc: "软件 (Software)"}
+    - {id: 416, cat: Books/EBook, desc: "摄影 (Photography)"}
+    - {id: 415, cat: Books/Technical, desc: "工具书 (Reference Books)"}
+    - {id: 414, cat: Books/Mags, desc: "杂志 (Magazines)"}
+    - {id: 413, cat: Other, desc: "图片集 (Photo Albums)"}
+    - {id: 412, cat: Books/Comics, desc: "连环画 (Comic Strips)"}
+    - {id: 418, cat: Books/EBook, desc: "插图书 (Illustrated Books)"}
+    - {id: 401, cat: Books/Technical, desc: "教学 (Instructional)"}
+    - {id: 409, cat: Books/Other, desc: "其他 (Others)"}
 
   modes:
     search: [q]
+    book-search: [q]
 
 settings:
   - name: cookie
@@ -62,13 +57,13 @@ settings:
     default: For best results, change the <b>Torrents per page:</b> setting to <b>100</b> on your account profile.
 
 login:
-  # using cookie method because login page has embedded Cloudflare turnstile
+  # using cookie method because site does a JS call to API/Challenge via JQuery to load response parm required for takelogin.php
   method: cookie
   inputs:
     cookie: "{{ .Config.cookie }}"
   test:
     path: index.php
-    selector: a[href*="usercp.php"]
+    selector: a[href="logout.php"]
 
 search:
   paths:
@@ -80,16 +75,16 @@ search:
     incldead: 0
     # 0 all, 1 normal, 2 free, 3 2x, 4 2xfree, 5 50%, 6 2x50%, 7 30%
     spstate: "{{ if .Config.freeleech }}2{{ else }}0{{ end }}"
-    # 0 title, 1 descr, 3 uploader
+    # 0 title, 1 descr, 3 uploader, 4 imdburl
     search_area: 0
-    # 0 AND, 1 OR, 2 exact
+    # 0 AND, 2 exact
     search_mode: 0
     sort: "{{ .Config.sort }}"
     type: "{{ .Config.type }}"
     notnewword: 1
 
   rows:
-    selector: table.torrents > tbody > tr:has(a[href^="details.php?id="])
+    selector: table.torrents > tbody > tr:has(a[href^="download.php?id="])
 
   fields:
     category:
@@ -138,11 +133,13 @@ search:
     size:
       selector: td.rowfollow:nth-child(5)
     seeders:
-      selector: td.rowfollow:nth-child(6)
+      selector: td.rowfollow.rowfollow:nth-child(6)
     leechers:
       selector: td.rowfollow:nth-child(7)
+      optional: true
     grabs:
       selector: td.rowfollow:nth-child(8)
+      optional: true
     downloadvolumefactor:
       case:
         img.pro_free: 0
@@ -158,8 +155,11 @@ search:
         img.pro_2up: 2
         "*": 1
     minimumratio:
-      text: 0.9
+      text: 1.0
+    minimumseedtime:
+      # 1 days (as seconds = 1 x 24 x 60 x 60)
+      text: 86400
     description:
       selector: td.rowfollow:nth-child(2)
       remove: a, b, font, img, span
-# NexusPHP KEMURIKUSA 2019-01-09
+# NexusPHP v1.9.6 2025-06-25 (Custom)

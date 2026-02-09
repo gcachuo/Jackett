@@ -275,6 +275,7 @@ namespace Jackett.Updater
                 "Definitions/anitoons.yml",
                 "Definitions/aox.yml",
                 "Definitions/apollo.yml", // migrated to C# gazelle base tracker
+                "Definitions/arenabg.yml",
                 "Definitions/archetorrent.yml",
                 "Definitions/asgaard.yml",
                 "Definitions/ast4u.yml", // renamed to animeworld #10578
@@ -628,7 +629,6 @@ namespace Jackett.Updater
                 "Definitions/pornorip.yml",
                 "Definitions/pornoslab.yml",
                 "Definitions/pornotor.yml",
-                "Definitions/pornotorrent.yml",
                 "Definitions/pornxlab.yml",
                 "Definitions/portugas.yml", // switch to *-API #13542
                 "Definitions/potuk.yml",
@@ -849,6 +849,7 @@ namespace Jackett.Updater
                 "Definitions/xider-torrent.yml",
                 "Definitions/xktorrent.yml",
                 "Definitions/xperiencebytes-api.yml",
+                "Definitions/xthor-api.yml",
                 "Definitions/xtremefile.yml",
                 "Definitions/xtremezone.yml", // migrated to C# XtremeZone base tracker
                 "Definitions/xxxadulttorrent.yml",
@@ -861,6 +862,8 @@ namespace Jackett.Updater
                 "Definitions/yoinked.yml",
                 "Definitions/yourbittorrent.yml",
                 "Definitions/yourexotic.yml", // renamed to exoticaz
+                "Definitions/zamundanet.yml",
+                "Definitions/zelkaorg.yml",
                 "Definitions/zetorrents.yml", // renamed to world-torrent #7574
                 "Definitions/zomb.yml",
                 "Definitions/zooqle.yml"
