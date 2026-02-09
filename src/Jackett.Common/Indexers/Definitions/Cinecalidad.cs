@@ -114,7 +114,7 @@ namespace Jackett.Common.Indexers.Definitions
                 var pageParam = page > 1 ? $"page/{page}/" : string.Empty;
                 var searchUrl = string.Format(templateUrl, pageParam);
                 var response = await RequestWithCookiesAndRetryAsync(searchUrl);
-                var pageReleases = ParseReleases(response, query);
+                var pageReleases = await ParseReleases(response, query);
 
                 // publish date is not available in the torrent list, but we add a relative date so we can sort
                 foreach (var release in pageReleases)
@@ -217,7 +217,7 @@ namespace Jackett.Common.Indexers.Definitions
             return null;
         }
 
-        private List<ReleaseInfo> ParseReleases(WebResult response, TorznabQuery query)
+        private async Task<List<ReleaseInfo>> ParseReleases(WebResult response, TorznabQuery query)
         {
             var releases = new List<ReleaseInfo>();
 
@@ -225,6 +225,46 @@ namespace Jackett.Common.Indexers.Definitions
             {
                 var parser = new HtmlParser();
                 using var dom = parser.ParseDocument(response.ContentString);
+
+                var isSearch = !string.IsNullOrWhiteSpace(query.GetQueryString());
+                var details4KCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
+                async Task<bool> GetIs4KFromDetailsAsync(string detailsUrl)
+                {
+                    if (detailsUrl.IsNullOrWhiteSpace())
+                    {
+                        return false;
+                    }
+
+                    detailsUrl = GetAbsoluteUrl(detailsUrl);
+
+                    if (details4KCache.TryGetValue(detailsUrl, out var cached))
+                    {
+                        return cached;
+                    }
+
+                    try
+                    {
+                        var detailsResponse = await RequestWithCookiesAndRetryAsync(detailsUrl);
+                        using var detailsDom = await parser.ParseDocumentAsync(detailsResponse.ContentString);
+
+                        var links = detailsDom.QuerySelectorAll("#sbss > a, ul.links a");
+                        var has4K = links.Any(a =>
+                        {
+                            var t = a?.TextContent ?? string.Empty;
+                            return t.IndexOf("4K", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                   t.IndexOf("2160", StringComparison.OrdinalIgnoreCase) >= 0;
+                        });
+
+                        details4KCache[detailsUrl] = has4K;
+                        return has4K;
+                    }
+                    catch
+                    {
+                        details4KCache[detailsUrl] = false;
+                        return false;
+                    }
+                }
 
                 // Get all movie items - updated selector to match the actual structure
                 var movieItems = dom.QuerySelectorAll("article, div[class*='post-']");
@@ -397,6 +437,8 @@ namespace Jackett.Common.Indexers.Definitions
                         continue;
                     }
 
+                    detailsUrl = GetAbsoluteUrl(detailsUrl);
+
                     try
                     {
                         var poster = !string.IsNullOrEmpty(posterUrl)
@@ -405,54 +447,61 @@ namespace Jackett.Common.Indexers.Definitions
                         var link = new Uri(detailsUrl);
 
                         // Check for 4K version
-                        var is4K = item.TextContent.IndexOf("4K", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                   item.TextContent.IndexOf("2160p", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                   detailsUrl.IndexOf("4k", StringComparison.OrdinalIgnoreCase) >= 0;
+                        var is4K = isSearch
+                            ? await GetIs4KFromDetailsAsync(detailsUrl)
+                            : (item.TextContent.IndexOf("4K", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                               item.TextContent.IndexOf("2160p", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                               (!qualityBadge.IsNullOrWhiteSpace() && Regex.IsMatch(qualityBadge, @"\b(4k|uhd|2160)\b", RegexOptions.IgnoreCase)));
 
-                        // Add HD version (1080p)
-                        releases.Add(new ReleaseInfo
-                        {
-                            Guid = link,
-                            Details = link,
-                            Link = link,
-                            Title = title1080p,
-                            Category = new List<int> { TorznabCatType.MoviesHD.ID },
-                            Poster = poster,
-                            Year = yearNumber,
-                            Genres = genres,
-                            Description = description,
-                            Size = 2147483648, // 2 GB
-                            Files = 1,
-                            Seeders = 1,
-                            Peers = 2,
-                            DownloadVolumeFactor = 0,
-                            UploadVolumeFactor = 1,
-                            PublishDate = DateTime.Today
-                        });
 
-                        // Add 4K version if available
-                        if (is4K)
+
+                        if (!is4K)
                         {
-                            var link4K = link.AddQueryParameter("type", "4k");
-                            releases.Add(new ReleaseInfo
-                            {
-                                Guid = link4K,
-                                Details = link,
-                                Link = link4K,
-                                Title = title2160p,
-                                Category = new List<int> { TorznabCatType.MoviesUHD.ID },
-                                Poster = poster,
-                                Year = yearNumber,
-                                Genres = genres,
-                                Description = description,
-                                Size = 10737418240, // 10 GB
-                                Files = 1,
-                                Seeders = 1,
-                                Peers = 2,
-                                DownloadVolumeFactor = 0,
-                                UploadVolumeFactor = 1,
-                                PublishDate = DateTime.Today
-                            });
+                            // Add HD version (1080p)
+                            releases.Add(
+                                new ReleaseInfo
+                                {
+                                    Guid = link,
+                                    Details = link,
+                                    Link = link,
+                                    Title = title1080p,
+                                    Category = new List<int> { TorznabCatType.MoviesHD.ID },
+                                    Poster = poster,
+                                    Year = yearNumber,
+                                    Genres = genres,
+                                    Description = description,
+                                    Size = 2.Gigabytes(),
+                                    Files = 1,
+                                    Seeders = 1,
+                                    Peers = 2,
+                                    DownloadVolumeFactor = 0,
+                                    UploadVolumeFactor = 1,
+                                    PublishDate = DateTime.Today
+                                });
+                        }
+                        else
+                        {
+                            // Add 4K version if available
+                            releases.Add(
+                                new ReleaseInfo
+                                {
+                                    Guid = link,
+                                    Details = link,
+                                    Link = link,
+                                    Title = title2160p,
+                                    Category = new List<int> { TorznabCatType.MoviesUHD.ID },
+                                    Poster = poster,
+                                    Year = yearNumber,
+                                    Genres = genres,
+                                    Description = description,
+                                    Size = 15.Gigabytes(),
+                                    Files = 1,
+                                    Seeders = 1,
+                                    Peers = 2,
+                                    DownloadVolumeFactor = 0,
+                                    UploadVolumeFactor = 1,
+                                    PublishDate = DateTime.Today
+                                });
                         }
                     }
                     catch (Exception)
