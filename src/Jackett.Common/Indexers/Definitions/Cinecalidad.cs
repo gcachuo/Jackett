@@ -227,18 +227,18 @@ namespace Jackett.Common.Indexers.Definitions
                 using var dom = parser.ParseDocument(response.ContentString);
 
                 var isSearch = !string.IsNullOrWhiteSpace(query.GetQueryString());
-                var details4KCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+                var detailsMagnetAvailabilityCache = new Dictionary<string, (bool HasHd, bool Has4K)>(StringComparer.OrdinalIgnoreCase);
 
-                async Task<bool> GetIs4KFromDetailsAsync(string detailsUrl)
+                async Task<(bool HasHd, bool Has4K)> GetMagnetAvailabilityFromDetailsAsync(string detailsUrl)
                 {
                     if (detailsUrl.IsNullOrWhiteSpace())
                     {
-                        return false;
+                        return (false, false);
                     }
 
                     detailsUrl = GetAbsoluteUrl(detailsUrl);
 
-                    if (details4KCache.TryGetValue(detailsUrl, out var cached))
+                    if (detailsMagnetAvailabilityCache.TryGetValue(detailsUrl, out var cached))
                     {
                         return cached;
                     }
@@ -248,21 +248,126 @@ namespace Jackett.Common.Indexers.Definitions
                         var detailsResponse = await RequestWithCookiesAndRetryAsync(detailsUrl);
                         using var detailsDom = await parser.ParseDocumentAsync(detailsResponse.ContentString);
 
-                        var links = detailsDom.QuerySelectorAll("#sbss > a, ul.links a");
-                        var has4K = links.Any(a =>
+                        async Task<bool> LinkResolvesToMagnetAsync(string href)
                         {
-                            var t = a?.TextContent ?? string.Empty;
-                            return t.IndexOf("4K", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                   t.IndexOf("2160", StringComparison.OrdinalIgnoreCase) >= 0;
-                        });
+                            if (href.IsNullOrWhiteSpace())
+                            {
+                                return false;
+                            }
 
-                        details4KCache[detailsUrl] = has4K;
-                        return has4K;
+                            if (href.IndexOf("acortalink", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                return false;
+                            }
+
+                            href = GetAbsoluteUrl(href);
+
+                            // Ignore external domains (usually link shorteners) - Cinecalidad magnets are expected to be served by the site flow.
+                            if (Uri.TryCreate(href, UriKind.Absolute, out var hrefUri))
+                            {
+                                var siteHost = new Uri(SiteLink).Host;
+                                if (!hrefUri.Host.Equals(siteHost, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    return false;
+                                }
+                            }
+
+                            try
+                            {
+                                var dlResult = await RequestWithCookiesAsync(href, referer: detailsUrl);
+                                dlResult = await FollowIfRedirect(dlResult, referrer: detailsUrl);
+
+                                if (!dlResult.RedirectingTo.IsNullOrWhiteSpace() &&
+                                    Uri.TryCreate(dlResult.RedirectingTo, UriKind.Absolute, out var redirectUri) &&
+                                    redirectUri.Scheme.Equals("magnet", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    return true;
+                                }
+
+                                using var dlDom = parser.ParseDocument(dlResult.ContentString);
+                                var magnet = dlDom.QuerySelector("a.link[data-href^='magnet:']")?.GetAttribute("data-href") ??
+                                             dlDom.QuerySelector("a[href^='magnet:']")?.GetAttribute("href");
+
+                                return !magnet.IsNullOrWhiteSpace();
+                            }
+                            catch
+                            {
+                                return false;
+                            }
+                        }
+
+                        var downloadLinks = detailsDom.QuerySelectorAll("#sbss > a");
+                        var candidates = downloadLinks
+                            .Select(a => new
+                            {
+                                Text = a?.TextContent?.Trim() ?? string.Empty,
+                                Href = a?.GetAttribute("href")
+                            })
+                            .Where(x => !x.Href.IsNullOrWhiteSpace())
+                            .Where(x => x.Href.IndexOf("acortalink", StringComparison.OrdinalIgnoreCase) < 0)
+                            .Where(x => x.Text.IndexOf("uTorrent", StringComparison.OrdinalIgnoreCase) >= 0)
+                            .ToList();
+
+                        var candidates4K = candidates
+                            .Where(x => x.Text.IndexOf("4K", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                        x.Text.IndexOf("2160", StringComparison.OrdinalIgnoreCase) >= 0)
+                            .ToList();
+
+                        var candidatesHd = candidates
+                            .Where(x => x.Text.IndexOf("4K", StringComparison.OrdinalIgnoreCase) < 0 &&
+                                        x.Text.IndexOf("2160", StringComparison.OrdinalIgnoreCase) < 0)
+                            .ToList();
+
+                        var hasHd = false;
+                        var has4K = false;
+
+                        // Try a small number of candidates to avoid spending too much time on dead/shortened links.
+                        const int maxTriesPerQuality = 2;
+                        var tries = 0;
+                        foreach (var c in candidates4K)
+                        {
+                            if (tries++ >= maxTriesPerQuality)
+                            {
+                                break;
+                            }
+
+                            if (await LinkResolvesToMagnetAsync(c.Href))
+                            {
+                                has4K = true;
+                                break;
+                            }
+                        }
+
+                        tries = 0;
+                        foreach (var c in candidatesHd)
+                        {
+                            if (tries++ >= maxTriesPerQuality)
+                            {
+                                break;
+                            }
+
+                            if (await LinkResolvesToMagnetAsync(c.Href))
+                            {
+                                hasHd = true;
+                                break;
+                            }
+                        }
+
+                        // If we only found 4K, treat it as having at least one magnet overall.
+                        if (has4K)
+                        {
+                            hasHd = true;
+                        }
+
+                        var availability = (HasHd: hasHd, Has4K: has4K);
+                        detailsMagnetAvailabilityCache[detailsUrl] = availability;
+                        return availability;
                     }
                     catch
                     {
-                        details4KCache[detailsUrl] = false;
-                        return false;
+                        var availability = (HasHd: false, Has4K: false);
+                        detailsMagnetAvailabilityCache[detailsUrl] = availability;
+                        return availability;
                     }
                 }
 
@@ -446,15 +551,24 @@ namespace Jackett.Common.Indexers.Definitions
                             : null;
                         var link = new Uri(detailsUrl);
 
-                        // Check for 4K version
-                        var is4K = isSearch
-                            ? await GetIs4KFromDetailsAsync(detailsUrl)
-                            : (item.TextContent.IndexOf("4K", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                               item.TextContent.IndexOf("2160p", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                               (!qualityBadge.IsNullOrWhiteSpace() && Regex.IsMatch(qualityBadge, @"\b(4k|uhd|2160)\b", RegexOptions.IgnoreCase)));
+                        // Check availability (only magnets) when searching; heuristic otherwise.
+                        var magnetsAvailability = isSearch
+                            ? await GetMagnetAvailabilityFromDetailsAsync(detailsUrl)
+                            : (HasHd: true,
+                               Has4K: (item.TextContent.IndexOf("4K", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                       item.TextContent.IndexOf("2160p", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                       (!qualityBadge.IsNullOrWhiteSpace() && Regex.IsMatch(qualityBadge, @"\b(4k|uhd|2160)\b", RegexOptions.IgnoreCase))));
+
+                        var is4K = magnetsAvailability.Has4K;
 
 
 
+                        if (!magnetsAvailability.Has4K && !magnetsAvailability.HasHd)
+                        {
+                            continue;
+                        }
+
+                        // Prefer 4K when available, else fall back to HD
                         if (!is4K)
                         {
                             // Add HD version (1080p)
@@ -482,12 +596,15 @@ namespace Jackett.Common.Indexers.Definitions
                         else
                         {
                             // Add 4K version if available
+                            var link4K = link.ToString().IndexOf("type=4k", StringComparison.OrdinalIgnoreCase) >= 0
+                                ? link
+                                : link.AddQueryParameter("type", "4k");
                             releases.Add(
                                 new ReleaseInfo
                                 {
-                                    Guid = link,
+                                    Guid = link4K,
                                     Details = link,
-                                    Link = link,
+                                    Link = link4K,
                                     Title = title2160p,
                                     Category = new List<int> { TorznabCatType.MoviesUHD.ID },
                                     Poster = poster,
