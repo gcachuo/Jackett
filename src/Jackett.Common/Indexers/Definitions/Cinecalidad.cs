@@ -25,7 +25,7 @@ namespace Jackett.Common.Indexers.Definitions
         public override string Id => "cinecalidad";
         public override string Name => "Cinecalidad";
         public override string Description => "Cinecalidad is a Public site for Películas Full UHD/HD en Latino Dual.";
-        public override string SiteLink { get; protected set; } = "https://www.cinecalidad.ec/";
+        public override string SiteLink { get; protected set; } = "https://www.cinecalidad.am/";
         public override string[] LegacySiteLinks => new[]
         {
             "https://wv.cinecalidad.foo/",
@@ -261,17 +261,49 @@ namespace Jackett.Common.Indexers.Definitions
                     }
 
                     var title = titleElement.TextContent.Trim();
-                    var year = yearElement?.TextContent.Trim();
 
-                    // Extract year if it's in format like (2023) or [2023]
-                    if (!string.IsNullOrEmpty(year))
+                    string year = null;
+
+                    var homePostContent = item.QuerySelector(".home_post_content");
+                    if (homePostContent != null)
                     {
-                        var yearMatch = Regex.Match(year, @"\(?(\d{4})\)?");
+                        foreach (var p in homePostContent.QuerySelectorAll("p"))
+                        {
+                            var pText = p?.TextContent?.Trim();
+                            if (!pText.IsNullOrWhiteSpace() && Regex.IsMatch(pText, @"^\d{4}$"))
+                            {
+                                year = pText;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (year.IsNullOrWhiteSpace())
+                    {
+                        var yearText = yearElement?.TextContent?.Trim();
+                        if (!yearText.IsNullOrWhiteSpace())
+                        {
+                            var yearMatch = Regex.Match(yearText, @"\b(19\d{2}|20\d{2})\b");
+                            if (yearMatch.Success)
+                            {
+                                year = yearMatch.Groups[1].Value;
+                            }
+                        }
+                    }
+
+                    if (year.IsNullOrWhiteSpace())
+                    {
+                        var yearMatch = Regex.Match(item.TextContent ?? string.Empty, @"\b(19\d{2}|20\d{2})\b");
                         if (yearMatch.Success)
                         {
                             year = yearMatch.Groups[1].Value;
-                            title = $"{title.Trim()} ({year})";
                         }
+                    }
+
+                    var titleWithYear = title;
+                    if (!year.IsNullOrWhiteSpace() && !Regex.IsMatch(titleWithYear, @"\b(19\d{2}|20\d{2})\b"))
+                    {
+                        titleWithYear = $"{titleWithYear} ({year})";
                     }
 
                     if (!CheckTitleMatchWords(query.GetQueryString(), title))
@@ -315,7 +347,7 @@ namespace Jackett.Common.Indexers.Definitions
                             Guid = link,
                             Details = link,
                             Link = link,
-                            Title = $"{title} MULTi/LATiN SPANiSH 1080p BDRip x264",
+                            Title = $"{titleWithYear} Latino 1080p",
                             Category = new List<int> { TorznabCatType.MoviesHD.ID },
                             Poster = poster,
                             Size = 2147483648, // 2 GB
@@ -336,7 +368,7 @@ namespace Jackett.Common.Indexers.Definitions
                                 Guid = link4K,
                                 Details = link,
                                 Link = link4K,
-                                Title = $"{title} MULTi/LATiN SPANiSH 2160p BDRip x265",
+                                Title = $"{titleWithYear} MULTi/LATiN SPANiSH 2160p BDRip x265",
                                 Category = new List<int> { TorznabCatType.MoviesUHD.ID },
                                 Poster = poster,
                                 Size = 10737418240, // 10 GB
