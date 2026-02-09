@@ -300,11 +300,79 @@ namespace Jackett.Common.Indexers.Definitions
                         }
                     }
 
+                    long? yearNumber = null;
+                    if (!year.IsNullOrWhiteSpace() && long.TryParse(year, out var parsedYear))
+                    {
+                        yearNumber = parsedYear;
+                    }
+
                     var titleWithYear = title;
                     if (!year.IsNullOrWhiteSpace() && !Regex.IsMatch(titleWithYear, @"\b(19\d{2}|20\d{2})\b"))
                     {
                         titleWithYear = $"{titleWithYear} ({year})";
                     }
+
+                    var qualityBadge = item.QuerySelector("div.squal")?.TextContent?.Trim();
+                    if (!qualityBadge.IsNullOrWhiteSpace())
+                    {
+                        qualityBadge = Regex.Replace(qualityBadge, @"\s+", " ").Trim();
+                    }
+
+                    var titleWithYearAndTags = titleWithYear;
+                    var shouldAddQualityBadgeToTitle = !qualityBadge.IsNullOrWhiteSpace() &&
+                                                      !Regex.IsMatch(qualityBadge, @"^(HD|UHD|4K)$", RegexOptions.IgnoreCase);
+                    if (shouldAddQualityBadgeToTitle && titleWithYearAndTags.IndexOf(qualityBadge, StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        titleWithYearAndTags = $"{titleWithYearAndTags} {qualityBadge}";
+                    }
+
+                    // Radarr parsing (align with LaMovie title structure)
+                    var language = "Latino.English";
+                    var title1080p = $"{titleWithYearAndTags}.1080p.{language}-cinecalidad";
+                    var title2160p = $"{titleWithYearAndTags}.2160p.{language}-cinecalidad";
+
+                    var genres = item.QuerySelectorAll(".home_post_cat a")
+                                     .Select(a => a?.TextContent?.Trim())
+                                     .Where(g => !g.IsNullOrWhiteSpace())
+                                     .Distinct(StringComparer.OrdinalIgnoreCase)
+                                     .ToList();
+
+                    var synopsis = homePostContent?.QuerySelector(".custom_synop")?.TextContent?.Trim();
+                    if (!synopsis.IsNullOrWhiteSpace())
+                    {
+                        synopsis = Regex.Replace(synopsis, @"\s+", " ").Trim();
+                    }
+
+                    var ratingText = item.QuerySelector(".rating")?.TextContent?.Trim();
+                    if (!ratingText.IsNullOrWhiteSpace())
+                    {
+                        ratingText = Regex.Replace(ratingText, @"\s+", " ").Trim();
+                    }
+
+                    var descriptionParts = new List<string>();
+                    if (!synopsis.IsNullOrWhiteSpace())
+                    {
+                        descriptionParts.Add(synopsis);
+                    }
+
+                    if (genres?.Count > 0)
+                    {
+                        descriptionParts.Add("Genres: " + string.Join(", ", genres));
+                    }
+
+                    if (!ratingText.IsNullOrWhiteSpace())
+                    {
+                        descriptionParts.Add("Rating: " + ratingText);
+                    }
+
+                    if (!qualityBadge.IsNullOrWhiteSpace())
+                    {
+                        descriptionParts.Add("Quality: " + qualityBadge);
+                    }
+
+                    var description = descriptionParts.Count > 0
+                        ? string.Join("\n", descriptionParts)
+                        : null;
 
                     if (!CheckTitleMatchWords(query.GetQueryString(), title))
                     {
@@ -347,9 +415,12 @@ namespace Jackett.Common.Indexers.Definitions
                             Guid = link,
                             Details = link,
                             Link = link,
-                            Title = $"{titleWithYear} Latino 1080p",
+                            Title = title1080p,
                             Category = new List<int> { TorznabCatType.MoviesHD.ID },
                             Poster = poster,
+                            Year = yearNumber,
+                            Genres = genres,
+                            Description = description,
                             Size = 2147483648, // 2 GB
                             Files = 1,
                             Seeders = 1,
@@ -368,9 +439,12 @@ namespace Jackett.Common.Indexers.Definitions
                                 Guid = link4K,
                                 Details = link,
                                 Link = link4K,
-                                Title = $"{titleWithYear} MULTi/LATiN SPANiSH 2160p BDRip x265",
+                                Title = title2160p,
                                 Category = new List<int> { TorznabCatType.MoviesUHD.ID },
                                 Poster = poster,
+                                Year = yearNumber,
+                                Genres = genres,
+                                Description = description,
                                 Size = 10737418240, // 10 GB
                                 Files = 1,
                                 Seeders = 1,
