@@ -36,6 +36,12 @@ search:
       args: ["(?i)S0?(\\d{1,2})", " $1 "]
     - name: re_replace
       args: ["(?i)E(\\d{2,3})", " $1 "]
+    # some trackers don't match when the year is included in the query (Radarr often sends it)
+    - name: re_replace
+      args: ["^(?=.*\\p{L})(.*)\\b(19\\d{2}|20\\d{2})\\b(.*)$", "$1 $3"]
+    - name: re_replace
+      args: ["\\s+", " "]
+    - name: trim
   inputs:
     s: "{{ .Keywords }}"
     x: 0
@@ -66,6 +72,8 @@ search:
       filters:
         - name: replace
           args: ["---", ""]
+        - name: toupper
+        - name: trim
     _language:
       selector: span#idiomacio > i > img
       attribute: title
@@ -73,32 +81,60 @@ search:
         - name: replace
           args: ["Pelicula en ", ""]
         - name: replace
-          args: ["Español Latino", "LATiN SPANiSH"]
+          args: ["Español Latino", "Latino"]
         - name: replace
-          args: ["Español Castellano", "SPANiSH"]
+          args: ["Español Castellano", "Spanish"]
         - name: replace
           args: ["Ingles", "English"]
         - name: replace
           args: ["Subtitulado", " SPASUBS"]
         - name: replace
           args: ["VOSE", ""]
+        - name: trim
+    _query_year:
+      text: "{{ .Query.Keywords }}"
+      optional: true
+      filters:
+        - name: regexp
+          args: "\\b(19\\d{2}|20\\d{2})\\b"
     title:
       selector: div.imagen > a
       attribute: title
       # normalize to SXXEYY format
       filters:
         - name: replace
-          args: [" – ", " "]
+          args: [" – ", "."]
         - name: replace
           args: ["(", ""]
         - name: replace
           args: [")", ""]
         - name: re_replace
+          args: ["\\s+\\b(19\\d{2}|20\\d{2})\\b", ".$1"]
+        - name: re_replace
           args: ["(\\d{2})×(\\d{2})", "S$1E$2"]
         - name: re_replace
           args: ["(\\d{1})×(\\d{2})", "S0$1E$2"]
+        - name: re_replace
+          args: ["\\sS(\\d{2})E(\\d{2,3})\\b", ".S$1E$2"]
+        - name: re_replace
+          args: ["\\s*\\.\\s*", "."]
+        - name: trim
+          args: "."
         - name: append
-          args: " {{ .Result._quality }} {{ .Result._language }}"
+          args: "{{ if .Query.Year }}.{{ .Query.Year }}{{ else }}{{ end }}"
+        - name: append
+          args: "{{ if .Result._query_year }}.{{ .Result._query_year }}{{ else }}{{ end }}"
+        - name: append
+          args: "{{ if .Result._quality }}.{{ .Result._quality }}{{ else }}.480p{{ end }}{{ if .Result._language }}.{{ .Result._language }}{{ else }}{{ end }}-elitetorrent.wf"
+        - name: re_replace
+          args: ["^(.*\\.(19\\d{2}|20\\d{2})\\b.*)\\.(\\2)\\b(?=\\.|-)", "$1"]
+    year:
+      selector: div.imagen > a
+      attribute: title
+      optional: true
+      filters:
+        - name: regexp
+          args: "\\b(19\\d{2}|20\\d{2})\\b"
     details:
       selector: .meta a
       attribute: href
