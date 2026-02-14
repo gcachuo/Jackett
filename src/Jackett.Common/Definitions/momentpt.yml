@@ -1,31 +1,29 @@
 ---
-id: ptsbao
-name: PTSBAO (烧包)
-description: "PTSBAO (烧包) is a CHINESE Private Torrent Tracker for HD MOVIES / TV"
+id: momentpt
+name: MomentPT
+description: "MomentPT is a CHINESE Private Torrent Tracker for Photography"
 language: zh-CN
 type: private
 encoding: UTF-8
-followredirect: true
 links:
-  - https://ptsbao.club/
+  - https://www.momentpt.top/
 
 caps:
   categorymappings:
-    - {id: 401, cat: Movies, desc: "Movies(电影)"}
-    - {id: 402, cat: TV, desc: "TV Series(电视剧)"}
-    - {id: 403, cat: TV/Other, desc: "TV Shows(电视节目)"}
-    - {id: 405, cat: TV/Anime, desc: "Animations(动漫)"}
-    - {id: 414, cat: Audio, desc: "Music(音乐)"}
-    - {id: 404, cat: TV/Documentary, desc: "Documentaries(记录片)"}
-    - {id: 423, cat: Movies, desc: "Movies Original(原创)"}
-    - {id: 409, cat: Other, desc: "Misc(其他)"}
-    - {id: 424, cat: Other, desc: "Limit(限制)"}
+    - {id: 401, cat: Other, desc: "写真(Portraiture)"}
+    - {id: 402, cat: Other, desc: "人像(Portrait)"}
+    - {id: 403, cat: Other, desc: "风光(Landscape)"}
+    - {id: 404, cat: Other, desc: "纪实(Documentary)"}
+    - {id: 416, cat: Other, desc: "杂志(Magazine)"}
+    - {id: 415, cat: Other, desc: "静物(Still Life)"}
+    - {id: 414, cat: Other, desc: "儿童(Children)"}
+    - {id: 413, cat: Other, desc: "超现实(Surreal)"}
+    - {id: 412, cat: Other, desc: "美食(Cuisine)"}
+    - {id: 411, cat: Other, desc: "动物(Animals)"}
+    - {id: 405, cat: Other, desc: "人文(Humanity)"}
 
   modes:
     search: [q]
-    tv-search: [q, season, ep, imdbid]
-    movie-search: [q, imdbid]
-    music-search: [q]
 
 settings:
   - name: cookie
@@ -57,9 +55,13 @@ settings:
     type: info
     label: Results Per Page
     default: For best results, change the <b>Torrents per page:</b> setting to <b>100</b> on your account profile.
+  - name: info_activity
+    type: info
+    label: Account Inactivity
+    default: "Account retention rules:<ol><li>Veteran User and above will be retained forever</li><li>Elite User and above will not have their account deleted after parking (in the control panel)</li><li>Users with a parked account will be deleted if they do not log in for 400 consecutive days</li><li>Users with a non-parked account will be deleted if they do not log in for 150 consecutive days</li><li>Users who have no traffic (i.e. upload/download data are both 0) will be deleted if they do not log in for 100 consecutive days.</li></ol>"
 
 login:
-  # switched from the form method to the cookie method due to #9554
+  # using cookie method because site does a JS call to API/Challenge via JQuery to load response parm required for takelogin.php
   method: cookie
   inputs:
     cookie: "{{ .Config.cookie }}"
@@ -72,32 +74,31 @@ search:
     - path: torrents.php
   inputs:
     $raw: "{{ range .Categories }}cat{{.}}=1&{{end}}"
-    search: "{{ if .Query.IMDBID }}{{ .Query.IMDBID }}{{ else }}{{ .Keywords }}{{ end }}"
+    search: "{{ .Keywords }}"
     # 0 incldead, 1 active, 2 dead
     incldead: 0
     # 0 all, 1 normal, 2 free, 3 2x, 4 2xfree, 5 50%, 6 2x50%, 7 30%
     spstate: "{{ if .Config.freeleech }}2{{ else }}0{{ end }}"
     # 0 title, 1 descr, 3 uploader, 4 imdburl
-    search_area: "{{ if .Query.IMDBID }}4{{ else }}0{{ end }}"
-    # 0 AND, 1 OR, 2 exact
+    search_area: 0
+    # 0 AND, 2 exact
     search_mode: 0
     sort: "{{ .Config.sort }}"
     type: "{{ .Config.type }}"
     notnewword: 1
-    # does not return imdb link in results
 
   rows:
-    selector: table.torrents > tbody > tr:has(a[href^="download.php?id="])
+    selector: table.torrents > tbody > tr:has(a[href*="download.php?id="])
 
   fields:
     category:
-      selector: a[href*="torrents.php?cat="]
+      selector: a[href*="?cat="]
       attribute: href
       filters:
         - name: querystring
           args: cat
     title_default:
-      selector: table.torrentname td a[href*="details.php?id="]
+      selector: a[href*="details.php?id="]
     title:
       selector: a[title][href*="details.php?id="]
       attribute: title
@@ -112,9 +113,6 @@ search:
     poster:
       selector: img[data-src]
       attribute: data-src
-      filters:
-        - name: replace
-          args: ["pic/imdb_pic/nophoto.gif", ""]
     date_elapsed:
       # time type: time elapsed (default)
       selector: td.rowfollow:nth-child(4) > span[title]
@@ -142,8 +140,10 @@ search:
       selector: td.rowfollow:nth-child(6)
     leechers:
       selector: td.rowfollow:nth-child(7)
+      optional: true
     grabs:
       selector: td.rowfollow:nth-child(8)
+      optional: true
     downloadvolumefactor:
       case:
         img.pro_free: 0
@@ -158,4 +158,12 @@ search:
         img.pro_free2up: 2
         img.pro_2up: 2
         "*": 1
-# NexusPHP v1.10.0 2026-02-01
+    minimumratio:
+      text: 2.0
+    minimumseedtime:
+      # 2 days (as seconds = 2 x 24 x 60 x 60)
+      text: 172800
+    description:
+      selector: td.rowfollow:nth-child(2)
+      remove: a, b, font, img, span
+# NexusPHP v1.9.7 2025-09-24 (custom)

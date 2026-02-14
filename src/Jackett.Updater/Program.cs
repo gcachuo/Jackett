@@ -480,7 +480,6 @@ namespace Jackett.Updater
                 "Definitions/hdpt.yml",
                 "Definitions/hdt-lafenice.yml",
                 "Definitions/hdvbits.yml",
-                "Definitions/hdvideo.yml",
                 "Definitions/hdzone.yml", // renamed to hdfun
                 "Definitions/heavens-hell.yml",
                 "Definitions/hellastz.yml",
@@ -833,6 +832,7 @@ namespace Jackett.Updater
                 "Definitions/utorrents.yml", // same as SzeneFZ now
                 "Definitions/vanila.yml",
                 "Definitions/vhstapes.yml",
+                "Definitions/videoteka.yml",
                 "Definitions/visionhd-api.yml",
                 "Definitions/vizuk.yml",
                 "Definitions/vtorrent.yml",

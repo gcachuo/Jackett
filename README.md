@@ -52,7 +52,6 @@ Prior versions of Jackett are no longer supported.
  * btstate
  * Byrutor
  * Catorrent
- * Cinecalidad
  * cpasbienClone
  * CrackingPatching
  * DaMagNet
@@ -214,7 +213,6 @@ Prior versions of Jackett are no longer supported.
  * TribalMixes
  * Union Fansub
  * UniOtaku
- * ViDEOTEKA (VT)
  * Ztracker
 </details>
 
@@ -390,6 +388,7 @@ Prior versions of Jackett are no longer supported.
  * HDTorrents.it [PAY2DL]
  * HDTurk
  * HDU
+ * HDVideo
  * Hebits (HB)
  * HellasHut
  * HELLENIC-HD
@@ -456,9 +455,11 @@ Prior versions of Jackett are no longer supported.
  * MMA-Torrents [![(invite needed)][inviteneeded]](#)
  * MNV (Max-New-Vision)
  * MOJBLiNK
+ * MomentPT [![(invite needed)][inviteneeded]](#)
  * MonikaDesign (MDU)
  * MoreThanTV (MTV) [![(invite needed)][inviteneeded]](#)
  * MouseBits
+ * Muxuege [![(invite needed)][inviteneeded]](#)
  * MyAnonamouse (MAM)
  * MySpleen [![(invite needed)][inviteneeded]](#)
  * NCore
@@ -488,6 +489,7 @@ Prior versions of Jackett are no longer supported.
  * PigNetwork (猪猪网)
  * PixelCove (Ultimate Gamer)
  * PiXELHD (PxHD) [![(invite needed)][inviteneeded]](#)
+ * PlayletPT [![(invite needed)][inviteneeded]](#)
  * Polish Torrent (PTT)
  * PolishTracker [![(invite needed)][inviteneeded]](#)
  * Pornbay [![(invite needed)][inviteneeded]](#)
@@ -503,6 +505,8 @@ Prior versions of Jackett are no longer supported.
  * PTFans
  * PTFiles (PTF)
  * PThome [![(invite needed)][inviteneeded]](#)
+ * PTLAO
+ * PTLGS [![(invite needed)][inviteneeded]](#)
  * PTSBAO (烧包) [![(invite needed)][inviteneeded]](#)
  * PTSKIT
  * PTtime
@@ -583,6 +587,7 @@ Prior versions of Jackett are no longer supported.
  * TLFBits [![(invite needed)][inviteneeded]](#)
  * TmGHuB (TH) [![(invite needed)][inviteneeded]](#)
  * Toca Share
+ * TokyoPT [![(invite needed)][inviteneeded]](#)
  * Tormac
  * Tornado
  * Torr9
@@ -625,6 +630,7 @@ Prior versions of Jackett are no longer supported.
  * World-In-HD [![(invite needed)][inviteneeded]](#)
  * World-of-Tomorrow [![(invite needed)][inviteneeded]](#)
  * x-ite.me (XM)
+ * Xingyung (星陨阁) [![(invite needed)][inviteneeded]](#)
  * xloli (ilolicon PT)
  * XSpeeds (XS)
  * xTorrenty [![(invite needed)][inviteneeded]](#)
