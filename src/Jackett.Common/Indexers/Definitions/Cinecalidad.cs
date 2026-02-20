@@ -97,10 +97,6 @@ namespace Jackett.Common.Indexers.Definitions
         {
             var releases = new List<ReleaseInfo>();
 
-            var templateUrl = $"{SiteLink}{{0}}?s="; // placeholder for page
-
-            var maxPages = MaxLatestPageLimit; // we scrape only 3 pages for recent torrents
-
             var searchTerm = query.GetQueryString();
             int? searchYear = null;
 
@@ -117,31 +113,60 @@ namespace Jackett.Common.Indexers.Definitions
             }
 
             var isSearch = !string.IsNullOrWhiteSpace(searchTerm);
+            
+            // Progressive fallback: try with significant words if full term doesn't work
+            var searchTerms = new List<string>();
             if (isSearch)
             {
-                templateUrl += WebUtilityHelpers.UrlEncode(searchTerm, Encoding.UTF8);
-                maxPages = MaxSearchPageLimit;
+                searchTerms.Add(searchTerm);
+                
+                // Try with only significant words (>3 chars) as fallback
+                var words = searchTerm.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                var significantWords = words.Where(w => w.Length > 3).ToArray();
+                if (significantWords.Length >= 2 && significantWords.Length < words.Length)
+                {
+                    searchTerms.Add(string.Join(" ", significantWords));
+                }
             }
 
             var lastPublishDate = DateTime.Now;
-            for (var page = 1; page <= maxPages; page++)
+            
+            foreach (var currentSearchTerm in searchTerms.Any() ? searchTerms : new List<string> { "" })
             {
-                var pageParam = page > 1 ? $"page/{page}/" : string.Empty;
-                var searchUrl = string.Format(templateUrl, pageParam);
-                var response = await RequestWithCookiesAndRetryAsync(searchUrl);
-                var pageReleases = await ParseReleases(response, query, searchYear, searchTerm);
-
-                // publish date is not available in the torrent list, but we add a relative date so we can sort
-                foreach (var release in pageReleases)
+                var currentTemplateUrl = $"{SiteLink}{{0}}?s=";
+                var currentMaxPages = MaxLatestPageLimit;
+                
+                if (!string.IsNullOrWhiteSpace(currentSearchTerm))
                 {
-                    release.PublishDate = lastPublishDate;
-                    lastPublishDate = lastPublishDate.AddMinutes(-1);
+                    currentTemplateUrl += WebUtilityHelpers.UrlEncode(currentSearchTerm, Encoding.UTF8);
+                    currentMaxPages = MaxSearchPageLimit;
                 }
-                releases.AddRange(pageReleases);
-
-                if (pageReleases.Count < 1 && isSearch)
+                
+                for (var page = 1; page <= currentMaxPages; page++)
                 {
-                    // this is the last page
+                    var pageParam = page > 1 ? $"page/{page}/" : string.Empty;
+                    var searchUrl = string.Format(currentTemplateUrl, pageParam);
+                    var response = await RequestWithCookiesAndRetryAsync(searchUrl);
+                    var pageReleases = await ParseReleases(response, query, searchYear, searchTerm);
+
+                    // publish date is not available in the torrent list, but we add a relative date so we can sort
+                    foreach (var release in pageReleases)
+                    {
+                        release.PublishDate = lastPublishDate;
+                        lastPublishDate = lastPublishDate.AddMinutes(-1);
+                    }
+                    releases.AddRange(pageReleases);
+
+                    if (pageReleases.Count < 1 && isSearch)
+                    {
+                        // this is the last page
+                        break;
+                    }
+                }
+                
+                // If we found results, stop trying fallback terms
+                if (releases.Any())
+                {
                     break;
                 }
             }
