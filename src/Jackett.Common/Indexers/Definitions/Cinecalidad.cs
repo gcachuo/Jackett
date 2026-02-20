@@ -129,7 +129,7 @@ namespace Jackett.Common.Indexers.Definitions
                 var pageParam = page > 1 ? $"page/{page}/" : string.Empty;
                 var searchUrl = string.Format(templateUrl, pageParam);
                 var response = await RequestWithCookiesAndRetryAsync(searchUrl);
-                var pageReleases = await ParseReleases(response, query, searchYear);
+                var pageReleases = await ParseReleases(response, query, searchYear, searchTerm);
 
                 // publish date is not available in the torrent list, but we add a relative date so we can sort
                 foreach (var release in pageReleases)
@@ -232,7 +232,7 @@ namespace Jackett.Common.Indexers.Definitions
             return null;
         }
 
-        private async Task<List<ReleaseInfo>> ParseReleases(WebResult response, TorznabQuery query, int? searchYear)
+        private async Task<List<ReleaseInfo>> ParseReleases(WebResult response, TorznabQuery query, int? searchYear, string searchTerm)
         {
             var releases = new List<ReleaseInfo>();
 
@@ -534,7 +534,7 @@ namespace Jackett.Common.Indexers.Definitions
                         ? string.Join("\n", descriptionParts)
                         : null;
 
-                    if (!CheckTitleMatchWords(query.GetQueryString(), title))
+                    if (!CheckTitleMatchWords(searchTerm, title))
                     {
                         continue;
                     }
