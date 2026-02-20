@@ -199,7 +199,8 @@ namespace Jackett.Common.Indexers.Definitions
                         searchTermForTmdb = searchTermForTmdb.Replace(searchYear.Value.ToString(), "").Trim();
                     }
 
-                    var spanishTitle = await GetSpanishTitleFromTmdb(searchTermForTmdb, searchYear);
+                    // Cinecalidad is movies only
+                    var spanishTitle = await GetSpanishTitleFromTmdb(searchTermForTmdb, searchYear, "movies");
                     if (!string.IsNullOrWhiteSpace(spanishTitle))
                     {
                         logger.Info($"TMDB translated '{searchTermForTmdb}' to '{spanishTitle}'");
@@ -745,7 +746,7 @@ namespace Jackett.Common.Indexers.Definitions
             return releases;
         }
 
-        private async Task<string> GetSpanishTitleFromTmdb(string englishTitle, int? year)
+        private async Task<string> GetSpanishTitleFromTmdb(string englishTitle, int? year, string postType)
         {
             var tmdbApiKey = ((StringConfigurationItem)configData.GetDynamic("TmdbApiKey")).Value;
             if (string.IsNullOrWhiteSpace(tmdbApiKey))
@@ -773,9 +774,37 @@ namespace Jackett.Common.Indexers.Definitions
                     return null;
                 }
 
-                // Filter by year if provided
+                // Prioritize movies when searching in movies
+                var isMovieSearch = postType == "movies";
+                
+                // Filter by year and media type
                 TmdbResult matchingResult = null;
-                if (year.HasValue)
+                if (year.HasValue || isMovieSearch)
+                {
+                    matchingResult = json.Results.FirstOrDefault(r =>
+                    {
+                        var matchesYear = true;
+                        if (year.HasValue)
+                        {
+                            var releaseYear = r.ReleaseDate?.Substring(0, 4);
+                            var firstAirYear = r.FirstAirDate?.Substring(0, 4);
+                            matchesYear = (releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value) ||
+                                         (firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value);
+                        }
+                        
+                        var matchesType = true;
+                        if (isMovieSearch)
+                        {
+                            // Prefer movies (media_type == "movie") when searching for movie content
+                            matchesType = r.MediaType == "movie";
+                        }
+                        
+                        return matchesYear && matchesType;
+                    });
+                }
+
+                // If no match with filters, try just year
+                if (matchingResult == null && year.HasValue)
                 {
                     matchingResult = json.Results.FirstOrDefault(r =>
                     {
@@ -786,7 +815,13 @@ namespace Jackett.Common.Indexers.Definitions
                     });
                 }
 
-                // If no year match or no year provided, use first result
+                // If still no match, use first movie result for movie searches
+                if (matchingResult == null && isMovieSearch)
+                {
+                    matchingResult = json.Results.FirstOrDefault(r => r.MediaType == "movie");
+                }
+
+                // If no match with any filter, use first result
                 var result = matchingResult ?? json.Results[0];
                 return result.Title ?? result.Name;
             }
@@ -872,6 +907,9 @@ namespace Jackett.Common.Indexers.Definitions
 
             [JsonPropertyName("first_air_date")]
             public string FirstAirDate { get; set; }
+
+            [JsonPropertyName("media_type")]
+            public string MediaType { get; set; }
         }
     }
 }
