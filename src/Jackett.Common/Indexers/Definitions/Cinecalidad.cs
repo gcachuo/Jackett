@@ -101,10 +101,25 @@ namespace Jackett.Common.Indexers.Definitions
 
             var maxPages = MaxLatestPageLimit; // we scrape only 3 pages for recent torrents
 
-            var isSearch = !string.IsNullOrWhiteSpace(query.GetQueryString());
+            var searchTerm = query.GetQueryString();
+            int? searchYear = null;
+
+            // Extract year from search term if present
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var yearMatch = Regex.Match(searchTerm, @"\b(19\d{2}|20\d{2})\b");
+                if (yearMatch.Success)
+                {
+                    searchYear = int.Parse(yearMatch.Value);
+                    // Remove year from search term
+                    searchTerm = searchTerm.Replace(yearMatch.Value, "").Trim();
+                }
+            }
+
+            var isSearch = !string.IsNullOrWhiteSpace(searchTerm);
             if (isSearch)
             {
-                templateUrl += WebUtilityHelpers.UrlEncode(query.GetQueryString(), Encoding.UTF8);
+                templateUrl += WebUtilityHelpers.UrlEncode(searchTerm, Encoding.UTF8);
                 maxPages = MaxSearchPageLimit;
             }
 
@@ -114,7 +129,7 @@ namespace Jackett.Common.Indexers.Definitions
                 var pageParam = page > 1 ? $"page/{page}/" : string.Empty;
                 var searchUrl = string.Format(templateUrl, pageParam);
                 var response = await RequestWithCookiesAndRetryAsync(searchUrl);
-                var pageReleases = await ParseReleases(response, query);
+                var pageReleases = await ParseReleases(response, query, searchYear);
 
                 // publish date is not available in the torrent list, but we add a relative date so we can sort
                 foreach (var release in pageReleases)
@@ -217,7 +232,7 @@ namespace Jackett.Common.Indexers.Definitions
             return null;
         }
 
-        private async Task<List<ReleaseInfo>> ParseReleases(WebResult response, TorznabQuery query)
+        private async Task<List<ReleaseInfo>> ParseReleases(WebResult response, TorznabQuery query, int? searchYear)
         {
             var releases = new List<ReleaseInfo>();
 
@@ -520,6 +535,12 @@ namespace Jackett.Common.Indexers.Definitions
                         : null;
 
                     if (!CheckTitleMatchWords(query.GetQueryString(), title))
+                    {
+                        continue;
+                    }
+
+                    // Filter by year if specified in search query
+                    if (searchYear.HasValue && yearNumber.HasValue && yearNumber.Value != searchYear.Value)
                     {
                         continue;
                     }
