@@ -440,9 +440,22 @@ namespace Jackett.Common.Indexers.Definitions
                     return null;
                 }
 
-                // Get the first result's Spanish title
-                var firstResult = json.Results[0];
-                return firstResult.Title ?? firstResult.Name;
+                // Filter by year if provided
+                TmdbResult matchingResult = null;
+                if (year.HasValue)
+                {
+                    matchingResult = json.Results.FirstOrDefault(r =>
+                    {
+                        var releaseYear = r.ReleaseDate?.Substring(0, 4);
+                        var firstAirYear = r.FirstAirDate?.Substring(0, 4);
+                        return (releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value) ||
+                               (firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value);
+                    });
+                }
+
+                // If no year match or no year provided, use first result
+                var result = matchingResult ?? json.Results[0];
+                return result.Title ?? result.Name;
             }
             catch (Exception ex)
             {
@@ -846,6 +859,12 @@ namespace Jackett.Common.Indexers.Definitions
 
             [JsonPropertyName("name")]
             public string Name { get; set; }
+
+            [JsonPropertyName("release_date")]
+            public string ReleaseDate { get; set; }
+
+            [JsonPropertyName("first_air_date")]
+            public string FirstAirDate { get; set; }
         }
     }
 }
