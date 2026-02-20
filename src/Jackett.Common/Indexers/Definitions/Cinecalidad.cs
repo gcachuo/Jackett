@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using AngleSharp.Html.Parser;
@@ -63,6 +65,12 @@ namespace Jackett.Common.Indexers.Definitions
                    configData: new ConfigurationData())
         {
             configData.AddDynamic("flaresolverr", new DisplayInfoConfigurationItem("FlareSolverr", "This site may use Cloudflare DDoS Protection, therefore Jackett requires <a href=\"https://github.com/Jackett/Jackett#configuring-flaresolverr\" target=\"_blank\">FlareSolverr</a> to access it."));
+
+            var tmdbApiKey = new StringConfigurationItem("TMDB API Key (optional, for better English title matching)")
+            {
+                Value = ""
+            };
+            configData.AddDynamic("TmdbApiKey", tmdbApiKey);
         }
 
         private TorznabCapabilities SetCapabilities()
@@ -175,6 +183,50 @@ namespace Jackett.Common.Indexers.Definitions
                 if (releases.Any())
                 {
                     break;
+                }
+            }
+
+            // If no results found with fallback terms, try TMDB translation
+            if (!releases.Any() && isSearch)
+            {
+                var originalSearchTerm = query.GetQueryString();
+                if (!string.IsNullOrWhiteSpace(originalSearchTerm))
+                {
+                    // Remove year for TMDB search
+                    var searchTermForTmdb = originalSearchTerm;
+                    if (searchYear.HasValue)
+                    {
+                        searchTermForTmdb = searchTermForTmdb.Replace(searchYear.Value.ToString(), "").Trim();
+                    }
+
+                    var spanishTitle = await GetSpanishTitleFromTmdb(searchTermForTmdb, searchYear);
+                    if (!string.IsNullOrWhiteSpace(spanishTitle))
+                    {
+                        logger.Info($"TMDB translated '{searchTermForTmdb}' to '{spanishTitle}'");
+                        
+                        var currentTemplateUrl = $"{SiteLink}{{0}}?s=";
+                        currentTemplateUrl += WebUtilityHelpers.UrlEncode(spanishTitle, Encoding.UTF8);
+                        
+                        for (var page = 1; page <= MaxSearchPageLimit; page++)
+                        {
+                            var pageParam = page > 1 ? $"page/{page}/" : string.Empty;
+                            var searchUrl = string.Format(currentTemplateUrl, pageParam);
+                            var response = await RequestWithCookiesAndRetryAsync(searchUrl);
+                            var pageReleases = await ParseReleases(response, query, searchYear, spanishTitle);
+
+                            foreach (var release in pageReleases)
+                            {
+                                release.PublishDate = lastPublishDate;
+                                lastPublishDate = lastPublishDate.AddMinutes(-1);
+                            }
+                            releases.AddRange(pageReleases);
+
+                            if (pageReleases.Count < 1)
+                            {
+                                break;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -693,6 +745,58 @@ namespace Jackett.Common.Indexers.Definitions
             return releases;
         }
 
+        private async Task<string> GetSpanishTitleFromTmdb(string englishTitle, int? year)
+        {
+            var tmdbApiKey = ((StringConfigurationItem)configData.GetDynamic("TmdbApiKey")).Value;
+            if (string.IsNullOrWhiteSpace(tmdbApiKey))
+            {
+                return null;
+            }
+
+            try
+            {
+                var searchUrl = $"https://api.themoviedb.org/3/search/multi?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
+                if (year.HasValue)
+                {
+                    searchUrl += $"&year={year.Value}";
+                }
+
+                var response = await RequestWithCookiesAsync(searchUrl);
+                if (response.Status != System.Net.HttpStatusCode.OK)
+                {
+                    return null;
+                }
+
+                var json = JsonSerializer.Deserialize<TmdbSearchResponse>(response.ContentString);
+                if (json?.Results == null || json.Results.Count == 0)
+                {
+                    return null;
+                }
+
+                // Filter by year if provided
+                TmdbResult matchingResult = null;
+                if (year.HasValue)
+                {
+                    matchingResult = json.Results.FirstOrDefault(r =>
+                    {
+                        var releaseYear = r.ReleaseDate?.Substring(0, 4);
+                        var firstAirYear = r.FirstAirDate?.Substring(0, 4);
+                        return (releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value) ||
+                               (firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value);
+                    });
+                }
+
+                // If no year match or no year provided, use first result
+                var result = matchingResult ?? json.Results[0];
+                return result.Title ?? result.Name;
+            }
+            catch (Exception ex)
+            {
+                logger.Error($"Error fetching TMDB data: {ex.Message}");
+                return null;
+            }
+        }
+
         // TODO: merge this method with query.MatchQueryStringAND
         private static bool CheckTitleMatchWords(string queryStr, string title)
         {
@@ -747,6 +851,27 @@ namespace Jackett.Common.Indexers.Definitions
         {
             var base64EncodedBytes = Convert.FromBase64String(base64EncodedData);
             return Encoding.UTF8.GetString(base64EncodedBytes);
+        }
+
+        public class TmdbSearchResponse
+        {
+            [JsonPropertyName("results")]
+            public List<TmdbResult> Results { get; set; }
+        }
+
+        public class TmdbResult
+        {
+            [JsonPropertyName("title")]
+            public string Title { get; set; }
+
+            [JsonPropertyName("name")]
+            public string Name { get; set; }
+
+            [JsonPropertyName("release_date")]
+            public string ReleaseDate { get; set; }
+
+            [JsonPropertyName("first_air_date")]
+            public string FirstAirDate { get; set; }
         }
     }
 }
