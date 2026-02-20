@@ -679,12 +679,12 @@ namespace Jackett.Common.Indexers.Definitions
 
             var queryWordsList = queryWords.ToList();
             
-            // Filter out years and very short words for more flexible matching
+            // Filter out years for more flexible matching
             var significantQueryWords = queryWordsList
-                .Where(w => w.Length > 3 && !Regex.IsMatch(w, @"^\d{4}$"))
+                .Where(w => !Regex.IsMatch(w, @"^\d{4}$"))
                 .ToList();
 
-            // If we have significant words, require at least 2 to match
+            // If we have 2+ words, require at least 2 to match
             if (significantQueryWords.Count >= 2)
             {
                 var matchCount = significantQueryWords.Count(word => titleWords.Contains(word));
