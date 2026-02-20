@@ -219,7 +219,20 @@ namespace Jackett.Common.Indexers.Definitions
                     // If no results found with fallback terms, try TMDB translation
                     if (!pageReleases.Any())
                     {
-                        var spanishTitle = await GetSpanishTitleFromTmdb(rawSearchTerm, searchYear);
+                        // Use original query term (before truncation) for TMDB search
+                        var originalTerm = query.GetQueryString()?.Trim();
+                        if (!string.IsNullOrWhiteSpace(originalTerm))
+                        {
+                            // Remove episode patterns and year for TMDB search
+                            originalTerm = Regex.Replace(originalTerm, @"\s+[Ss]\d{1,2}[Ee]\d{1,2}$", "").Trim();
+                            originalTerm = Regex.Replace(originalTerm, @"\s+\d{1,2}[xX]\d{1,2}$", "").Trim();
+                            if (searchYear.HasValue)
+                            {
+                                originalTerm = originalTerm.Replace(searchYear.Value.ToString(), "").Trim();
+                            }
+                        }
+                        
+                        var spanishTitle = await GetSpanishTitleFromTmdb(originalTerm ?? rawSearchTerm, searchYear, postType);
                         if (!string.IsNullOrWhiteSpace(spanishTitle))
                         {
                             logger.Info($"TMDB translated '{rawSearchTerm}' to '{spanishTitle}'");
@@ -412,7 +425,7 @@ namespace Jackett.Common.Indexers.Definitions
         /// When searching with English titles against Spanish content, this method
         /// creates increasingly shorter search terms to improve match probability.
         /// </summary>
-        private async Task<string> GetSpanishTitleFromTmdb(string englishTitle, int? year)
+        private async Task<string> GetSpanishTitleFromTmdb(string englishTitle, int? year, string postType)
         {
             var tmdbApiKey = ((ConfigurationData.StringConfigurationItem)configData.GetDynamic("TmdbApiKey")).Value;
             if (string.IsNullOrWhiteSpace(tmdbApiKey))
@@ -440,9 +453,37 @@ namespace Jackett.Common.Indexers.Definitions
                     return null;
                 }
 
-                // Filter by year if provided
+                // Prioritize TV shows when searching in tvshows/animes
+                var isTvSearch = postType == "tvshows" || postType == "animes";
+                
+                // Filter by year and media type
                 TmdbResult matchingResult = null;
-                if (year.HasValue)
+                if (year.HasValue || isTvSearch)
+                {
+                    matchingResult = json.Results.FirstOrDefault(r =>
+                    {
+                        var matchesYear = true;
+                        if (year.HasValue)
+                        {
+                            var releaseYear = r.ReleaseDate?.Substring(0, 4);
+                            var firstAirYear = r.FirstAirDate?.Substring(0, 4);
+                            matchesYear = (releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value) ||
+                                         (firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value);
+                        }
+                        
+                        var matchesType = true;
+                        if (isTvSearch)
+                        {
+                            // Prefer TV shows (media_type == "tv") when searching for TV content
+                            matchesType = r.MediaType == "tv";
+                        }
+                        
+                        return matchesYear && matchesType;
+                    });
+                }
+
+                // If no match with filters, try just year
+                if (matchingResult == null && year.HasValue)
                 {
                     matchingResult = json.Results.FirstOrDefault(r =>
                     {
@@ -453,7 +494,13 @@ namespace Jackett.Common.Indexers.Definitions
                     });
                 }
 
-                // If no year match or no year provided, use first result
+                // If still no match, use first TV result for TV searches
+                if (matchingResult == null && isTvSearch)
+                {
+                    matchingResult = json.Results.FirstOrDefault(r => r.MediaType == "tv");
+                }
+
+                // If no match with any filter, use first result
                 var result = matchingResult ?? json.Results[0];
                 return result.Title ?? result.Name;
             }
@@ -865,6 +912,9 @@ namespace Jackett.Common.Indexers.Definitions
 
             [JsonPropertyName("first_air_date")]
             public string FirstAirDate { get; set; }
+
+            [JsonPropertyName("media_type")]
+            public string MediaType { get; set; }
         }
     }
 }
