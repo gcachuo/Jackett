@@ -120,9 +120,10 @@ namespace Jackett.Common.Indexers.Definitions
             {
                 searchTerms.Add(searchTerm);
                 
-                // Try with only significant words (>3 chars) as fallback
+                // Try with only significant words (>3 chars, excluding common words) as fallback
+                var commonWords = new[] { "movie", "film", "series", "show", "the" };
                 var words = searchTerm.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                var significantWords = words.Where(w => w.Length > 3).ToArray();
+                var significantWords = words.Where(w => w.Length > 3 && !commonWords.Contains(w.ToLower())).ToArray();
                 if (significantWords.Length >= 2 && significantWords.Length < words.Length)
                 {
                     searchTerms.Add(string.Join(" ", significantWords));
