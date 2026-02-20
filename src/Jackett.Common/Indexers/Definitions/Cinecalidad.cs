@@ -114,19 +114,25 @@ namespace Jackett.Common.Indexers.Definitions
 
             var isSearch = !string.IsNullOrWhiteSpace(searchTerm);
             
-            // Progressive fallback: try with significant words if full term doesn't work
+            // Progressive fallback: try with fewer words if full term doesn't work
             var searchTerms = new List<string>();
             if (isSearch)
             {
+                var words = searchTerm.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                
+                // Try full term first
                 searchTerms.Add(searchTerm);
                 
-                // Try with only significant words (>3 chars, excluding common words) as fallback
-                var commonWords = new[] { "movie", "film", "series", "show", "the" };
-                var words = searchTerm.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                var significantWords = words.Where(w => w.Length > 3 && !commonWords.Contains(w.ToLower())).ToArray();
-                if (significantWords.Length >= 2 && significantWords.Length < words.Length)
+                // Try with first 3 words if we have more
+                if (words.Length > 3)
                 {
-                    searchTerms.Add(string.Join(" ", significantWords));
+                    searchTerms.Add(string.Join(" ", words.Take(3)));
+                }
+                
+                // Try with first 2 words if we have more than 2
+                if (words.Length > 2)
+                {
+                    searchTerms.Add(string.Join(" ", words.Take(2)));
                 }
             }
 
