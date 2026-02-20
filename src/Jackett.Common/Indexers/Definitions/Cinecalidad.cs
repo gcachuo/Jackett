@@ -660,6 +660,11 @@ namespace Jackett.Common.Indexers.Definitions
         // TODO: merge this method with query.MatchQueryStringAND
         private static bool CheckTitleMatchWords(string queryStr, string title)
         {
+            if (string.IsNullOrWhiteSpace(queryStr))
+            {
+                return true;
+            }
+
             // this code split the words, remove words with 2 letters or less, remove accents and lowercase
             var queryMatches = Regex.Matches(queryStr, @"\b[\w']*\b");
             var queryWords = from m in queryMatches.Cast<Match>()
@@ -672,7 +677,22 @@ namespace Jackett.Common.Indexers.Definitions
                              select Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower()));
             titleWords = titleWords.ToArray();
 
-            return queryWords.All(word => titleWords.Contains(word));
+            var queryWordsList = queryWords.ToList();
+            
+            // Filter out years and very short words for more flexible matching
+            var significantQueryWords = queryWordsList
+                .Where(w => w.Length > 3 && !Regex.IsMatch(w, @"^\d{4}$"))
+                .ToList();
+
+            // If we have significant words, require at least 2 to match
+            if (significantQueryWords.Count >= 2)
+            {
+                var matchCount = significantQueryWords.Count(word => titleWords.Contains(word));
+                return matchCount >= 2;
+            }
+
+            // Fallback to original logic for short queries
+            return queryWordsList.All(word => titleWords.Contains(word));
         }
 
         private string GetAbsoluteUrl(string url)
