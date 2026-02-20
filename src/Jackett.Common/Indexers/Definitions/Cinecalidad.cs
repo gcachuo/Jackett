@@ -539,10 +539,14 @@ namespace Jackett.Common.Indexers.Definitions
                         continue;
                     }
 
-                    // Filter by year if specified in search query
-                    if (searchYear.HasValue && yearNumber.HasValue && yearNumber.Value != searchYear.Value)
+                    // Filter by year if specified in search query and release has year
+                    // Only filter if both years are available and don't match
+                    if (searchYear.HasValue && yearNumber.HasValue)
                     {
-                        continue;
+                        if (yearNumber.Value != searchYear.Value)
+                        {
+                            continue;
+                        }
                     }
 
                     var posterUrl = imgElement?.GetAttribute("data-src") ??
