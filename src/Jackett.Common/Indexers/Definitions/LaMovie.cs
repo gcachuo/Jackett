@@ -76,6 +76,12 @@ namespace Jackett.Common.Indexers.Definitions
             };
             configData.AddDynamic("MaxEpisodesPerSeries", maxEpisodes);
 
+            var tmdbApiKey = new ConfigurationData.StringConfigurationItem("TMDB API Key (optional, for better English title matching)")
+            {
+                Value = ""
+            };
+            configData.AddDynamic("TmdbApiKey", tmdbApiKey);
+
             var apiLink = $"{SiteLink}wp-api/v1/";
             _searchUrl = $"{apiLink}search?filter=%7B%7D&postType={{0}}&postsPerPage={ReleasesPerPage}";
             _latestUrl =
@@ -207,6 +213,25 @@ namespace Jackett.Common.Indexers.Definitions
                         if (pageReleases.Any())
                         {
                             break; // Found results, stop trying
+                        }
+                    }
+
+                    // If no results found with fallback terms, try TMDB translation
+                    if (!pageReleases.Any())
+                    {
+                        var spanishTitle = await GetSpanishTitleFromTmdb(rawSearchTerm, searchYear);
+                        if (!string.IsNullOrWhiteSpace(spanishTitle))
+                        {
+                            logger.Info($"TMDB translated '{rawSearchTerm}' to '{spanishTitle}'");
+                            var searchUrl = string.Format(_searchUrl, postType) + $"&q={Uri.EscapeDataString(spanishTitle)}";
+                            var response = await RequestWithCookiesAndRetryAsync(
+                                searchUrl, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
+                                headers: _headers);
+
+                            if (!response.ContentString.Contains("\"error\":true"))
+                            {
+                                pageReleases = await ParseReleasesAsync(response, query, isLatest, spanishTitle, rawSearchTerm, searchYear);
+                            }
                         }
                     }
                 }
@@ -387,6 +412,58 @@ namespace Jackett.Common.Indexers.Definitions
         /// When searching with English titles against Spanish content, this method
         /// creates increasingly shorter search terms to improve match probability.
         /// </summary>
+        private async Task<string> GetSpanishTitleFromTmdb(string englishTitle, int? year)
+        {
+            var tmdbApiKey = ((ConfigurationData.StringConfigurationItem)configData.GetDynamic("TmdbApiKey")).Value;
+            if (string.IsNullOrWhiteSpace(tmdbApiKey))
+            {
+                return null;
+            }
+
+            try
+            {
+                var searchUrl = $"https://api.themoviedb.org/3/search/multi?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
+                if (year.HasValue)
+                {
+                    searchUrl += $"&year={year.Value}";
+                }
+
+                var response = await RequestWithCookiesAsync(searchUrl);
+                if (response.Status != System.Net.HttpStatusCode.OK)
+                {
+                    return null;
+                }
+
+                var json = JsonSerializer.Deserialize<TmdbSearchResponse>(response.ContentString);
+                if (json?.Results == null || json.Results.Count == 0)
+                {
+                    return null;
+                }
+
+                // Filter by year if provided
+                TmdbResult matchingResult = null;
+                if (year.HasValue)
+                {
+                    matchingResult = json.Results.FirstOrDefault(r =>
+                    {
+                        var releaseYear = r.ReleaseDate?.Substring(0, 4);
+                        var firstAirYear = r.FirstAirDate?.Substring(0, 4);
+                        return (releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value) ||
+                               (firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value);
+                    });
+                }
+
+                // If no year match or no year provided, use first result
+                var result = matchingResult ?? json.Results[0];
+                return result.Title ?? result.Name;
+            }
+            catch (Exception ex)
+            {
+                logger.Error($"Error fetching TMDB data: {ex.Message}");
+                return null;
+            }
+        }
+
         private static List<string> GetProgressiveFallbackTerms(string searchTerm)
         {
             var terms = new List<string>();
@@ -767,6 +844,27 @@ namespace Jackett.Common.Indexers.Definitions
 
             [JsonPropertyName("per_page")]
             public int PerPage { get; set; }
+        }
+
+        public class TmdbSearchResponse
+        {
+            [JsonPropertyName("results")]
+            public List<TmdbResult> Results { get; set; }
+        }
+
+        public class TmdbResult
+        {
+            [JsonPropertyName("title")]
+            public string Title { get; set; }
+
+            [JsonPropertyName("name")]
+            public string Name { get; set; }
+
+            [JsonPropertyName("release_date")]
+            public string ReleaseDate { get; set; }
+
+            [JsonPropertyName("first_air_date")]
+            public string FirstAirDate { get; set; }
         }
     }
 }
