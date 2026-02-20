@@ -181,6 +181,10 @@ namespace Jackett.Common.Indexers.Definitions
                 postTypes.Add("animes");
             }
 
+            // Cache TMDB translation to avoid duplicate API calls
+            string tmdbTranslatedTitle = null;
+            var tmdbTranslationAttempted = false;
+
             var seenGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var postType in postTypes)
             {
@@ -216,9 +220,11 @@ namespace Jackett.Common.Indexers.Definitions
                         }
                     }
 
-                    // If no results found with fallback terms, try TMDB translation
-                    if (!pageReleases.Any())
+                    // If no results found with fallback terms, try TMDB translation (only once)
+                    if (!pageReleases.Any() && !tmdbTranslationAttempted)
                     {
+                        tmdbTranslationAttempted = true;
+                        
                         // Use original query term (before truncation) for TMDB search
                         var originalTerm = query.GetQueryString()?.Trim();
                         if (!string.IsNullOrWhiteSpace(originalTerm))
@@ -232,19 +238,24 @@ namespace Jackett.Common.Indexers.Definitions
                             }
                         }
                         
-                        var spanishTitle = await GetSpanishTitleFromTmdb(originalTerm ?? rawSearchTerm, searchYear, postType);
-                        if (!string.IsNullOrWhiteSpace(spanishTitle))
+                        tmdbTranslatedTitle = await GetSpanishTitleFromTmdb(originalTerm ?? rawSearchTerm, searchYear, postType);
+                        if (!string.IsNullOrWhiteSpace(tmdbTranslatedTitle))
                         {
-                            logger.Info($"TMDB translated '{rawSearchTerm}' to '{spanishTitle}'");
-                            var searchUrl = string.Format(_searchUrl, postType) + $"&q={Uri.EscapeDataString(spanishTitle)}";
-                            var response = await RequestWithCookiesAndRetryAsync(
-                                searchUrl, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
-                                headers: _headers);
+                            logger.Info($"TMDB translated '{rawSearchTerm}' to '{tmdbTranslatedTitle}'");
+                        }
+                    }
 
-                            if (!response.ContentString.Contains("\"error\":true"))
-                            {
-                                pageReleases = await ParseReleasesAsync(response, query, isLatest, spanishTitle, rawSearchTerm, searchYear);
-                            }
+                    // Use cached TMDB translation if available
+                    if (!pageReleases.Any() && !string.IsNullOrWhiteSpace(tmdbTranslatedTitle))
+                    {
+                        var searchUrl = string.Format(_searchUrl, postType) + $"&q={Uri.EscapeDataString(tmdbTranslatedTitle)}";
+                        var response = await RequestWithCookiesAndRetryAsync(
+                            searchUrl, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
+                            headers: _headers);
+
+                        if (!response.ContentString.Contains("\"error\":true"))
+                        {
+                            pageReleases = await ParseReleasesAsync(response, query, isLatest, tmdbTranslatedTitle, rawSearchTerm, searchYear);
                         }
                     }
                 }
