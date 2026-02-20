@@ -97,7 +97,38 @@ namespace Jackett.Common.Indexers.Definitions
         {
             var releases = new List<ReleaseInfo>();
             var rawSearchTerm = query.GetQueryString()?.Trim();
-            var searchTerm = WebUtilityHelpers.UrlEncode(rawSearchTerm, Encoding.UTF8);
+            int? searchYear = null;
+
+            // Extract year from search term if present
+            if (!string.IsNullOrWhiteSpace(rawSearchTerm))
+            {
+                var yearMatch = Regex.Match(rawSearchTerm, @"\b(19\d{2}|20\d{2})\b");
+                if (yearMatch.Success)
+                {
+                    searchYear = int.Parse(yearMatch.Value);
+                    // Remove year from search term
+                    rawSearchTerm = rawSearchTerm.Replace(yearMatch.Value, "").Trim();
+                }
+            }
+
+            // Remove episode patterns from search term (e.g., "Show Name S01E01" -> "Show Name")
+            // but keep the episode info in query object for filtering
+            if (!string.IsNullOrWhiteSpace(rawSearchTerm))
+            {
+                // Remove patterns like S01E01, s01e01
+                rawSearchTerm = Regex.Replace(rawSearchTerm, @"\s+[Ss]\d{1,2}[Ee]\d{1,2}$", "").Trim();
+                // Remove patterns like 1x01, 1X01
+                rawSearchTerm = Regex.Replace(rawSearchTerm, @"\s+\d{1,2}[xX]\d{1,2}$", "").Trim();
+            }
+
+            // Limit search term to 16 characters to match the website's search API behavior for better title matching
+            // The website uses: const Fe = xe.substring(0, 16);
+            if (!string.IsNullOrWhiteSpace(rawSearchTerm) && rawSearchTerm.Length > 16)
+            {
+                rawSearchTerm = rawSearchTerm.Substring(0, 16);
+            }
+
+            var searchTerm = !string.IsNullOrWhiteSpace(rawSearchTerm) ? Uri.EscapeDataString(rawSearchTerm) : string.Empty;
             var isLatest = string.IsNullOrWhiteSpace(rawSearchTerm);
 
             if (!isLatest && rawSearchTerm.Length < 3)
@@ -147,13 +178,47 @@ namespace Jackett.Common.Indexers.Definitions
             var seenGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var postType in postTypes)
             {
-                var searchUrl = string.Format(_searchUrl, postType) + $"&q={searchTerm}";
-                var latestUrl = string.Format(_latestUrl, postType);
-                var releasesUrl = !isLatest ? searchUrl : latestUrl;
-                var response = await RequestWithCookiesAndRetryAsync(
-                    releasesUrl, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
-                    headers: _headers);
-                var pageReleases = await ParseReleasesAsync(response, query, isLatest);
+                List<ReleaseInfo> pageReleases = new List<ReleaseInfo>();
+
+                if (!isLatest)
+                {
+                    // Progressive fallback strategy for Spanish title matching:
+                    // 1. Try full search term
+                    // 2. If no results, try first 2 words
+                    // 3. If still no results, try first word only
+                    // This allows matching English titles against Spanish content using original_title field
+                    var searchTerms = GetProgressiveFallbackTerms(rawSearchTerm);
+
+                    foreach (var term in searchTerms)
+                    {
+                        var searchUrl = string.Format(_searchUrl, postType) + $"&q={Uri.EscapeDataString(term)}";
+                        var response = await RequestWithCookiesAndRetryAsync(
+                            searchUrl, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
+                            headers: _headers);
+
+                        // Check if API returned error
+                        if (response.ContentString.Contains("\"error\":true"))
+                        {
+                            continue; // Try next fallback term
+                        }
+
+                        pageReleases = await ParseReleasesAsync(response, query, isLatest, term, rawSearchTerm, searchYear);
+
+                        if (pageReleases.Any())
+                        {
+                            break; // Found results, stop trying
+                        }
+                    }
+                }
+                else
+                {
+                    // Latest releases, no search term
+                    var latestUrl = string.Format(_latestUrl, postType);
+                    var response = await RequestWithCookiesAndRetryAsync(
+                        latestUrl, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
+                        headers: _headers);
+                    pageReleases = await ParseReleasesAsync(response, query, isLatest, rawSearchTerm, rawSearchTerm, searchYear);
+                }
 
                 foreach (var release in pageReleases)
                 {
@@ -173,7 +238,7 @@ namespace Jackett.Common.Indexers.Definitions
             return releases;
         }
 
-        private async Task<List<ReleaseInfo>> ParseReleasesAsync(WebResult response, TorznabQuery query, bool isLatest)
+        private async Task<List<ReleaseInfo>> ParseReleasesAsync(WebResult response, TorznabQuery query, bool isLatest, string searchTerm, string originalSearchTerm, int? searchYear)
         {
             var releases = new List<ReleaseInfo>();
             var apiResponse = JsonSerializer.Deserialize<ApiResponse>(response.ContentString);
@@ -191,10 +256,29 @@ namespace Jackett.Common.Indexers.Definitions
                     continue;
                 }
 
-                if (!CheckTitleMatchWords(query.GetQueryString(), post.Title))
+                // Filter by year if specified in search query
+                if (searchYear.HasValue && !string.IsNullOrWhiteSpace(post.ReleaseDate))
                 {
-                    // skip if it doesn't contain all words
-                    continue;
+                    var postYear = post.ReleaseDate.Split('-')[0];
+                    if (int.TryParse(postYear, out var postYearInt) && postYearInt != searchYear.Value)
+                    {
+                        continue; // Skip if year doesn't match
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(searchTerm))
+                {
+                    // Match against both Spanish title and original English title
+                    // This allows finding content when searching for English titles
+                    var matchesTitle = CheckTitleMatchWords(searchTerm, post.Title, originalSearchTerm);
+                    var matchesOriginalTitle = !string.IsNullOrWhiteSpace(post.OriginalTitle) &&
+                                               CheckTitleMatchWords(searchTerm, post.OriginalTitle, originalSearchTerm);
+
+                    if (!matchesTitle && !matchesOriginalTitle)
+                    {
+                        // skip if it doesn't match either title
+                        continue;
+                    }
                 }
 
                 var year = post.ReleaseDate?.Split('-')[0];
@@ -209,7 +293,37 @@ namespace Jackett.Common.Indexers.Definitions
                 var detailsUrl = string.Format(_detailsUrl, post.Type) + $"&slug={post.Slug}";
                 var link = new Uri(detailsUrl);
                 var downloadUrls = await GetDownloadUrlsAsync(link, post.Type, isLatest);
-                releases.AddRange(downloadUrls.Select(downloadUrl =>
+
+                // Filter by episode if specified
+                var filteredDownloadUrls = downloadUrls;
+                if (query.Season > 0 || !string.IsNullOrWhiteSpace(query.Episode))
+                {
+                    filteredDownloadUrls = downloadUrls.Where(downloadUrl =>
+                    {
+                        if (string.IsNullOrWhiteSpace(downloadUrl.Episode))
+                        {
+                            return false;
+                        }
+
+                        // Parse episode tag (e.g., "S01E01")
+                        var episodeMatch = Regex.Match(downloadUrl.Episode, @"S(\d{1,2})E(\d{1,2})", RegexOptions.IgnoreCase);
+                        if (!episodeMatch.Success)
+                        {
+                            return false;
+                        }
+
+                        var season = int.Parse(episodeMatch.Groups[1].Value);
+                        var episode = int.Parse(episodeMatch.Groups[2].Value);
+
+                        // Match season and episode
+                        var seasonMatch = query.Season == 0 || query.Season == season;
+                        var episodeMatch2 = string.IsNullOrWhiteSpace(query.Episode) || query.Episode == episode.ToString();
+
+                        return seasonMatch && episodeMatch2;
+                    }).ToList();
+                }
+
+                releases.AddRange(filteredDownloadUrls.Select(downloadUrl =>
                 {
                     var uriMagnet = new Uri(downloadUrl.Url);
                     var categories = post.Type switch
@@ -251,7 +365,7 @@ namespace Jackett.Common.Indexers.Definitions
                         Guid = uriMagnet,
                         Details = details,
                         Link = uriMagnet,
-                        Title = $"{post.Title}.{episodePart}{quality}.{language}-la.movie",
+                        Title = $"{post.Title}.{episodePart}{quality}.{language}-LaMovie",
                         Category = categories,
                         Poster = new($"{SiteLink}wp-content/uploads{post.Images.Poster}"),
                         Year = year != null ? long.Parse(year) : DateTime.Now.Year,
@@ -268,7 +382,53 @@ namespace Jackett.Common.Indexers.Definitions
             return releases;
         }
 
-        private static bool CheckTitleMatchWords(string queryStr, string title)
+        /// <summary>
+        /// Generates progressive fallback search terms for Spanish title matching.
+        /// When searching with English titles against Spanish content, this method
+        /// creates increasingly shorter search terms to improve match probability.
+        /// </summary>
+        private static List<string> GetProgressiveFallbackTerms(string searchTerm)
+        {
+            var terms = new List<string>();
+            var words = searchTerm.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+
+            if (words.Length == 0)
+            {
+                return terms;
+            }
+
+            // Strategy 1: Try with full term (already truncated to 16 chars)
+            terms.Add(searchTerm);
+
+            // Filter out short/common words for fallback strategies
+            var significantWords = words.Where(w => w.Length > 3).ToList();
+
+            // Strategy 2: Try with first 2 significant words
+            if (significantWords.Count >= 2)
+            {
+                terms.Add(string.Join(" ", significantWords.Take(2)));
+            }
+            else if (words.Length >= 2)
+            {
+                // Fallback to first 2 words even if not significant
+                terms.Add(string.Join(" ", words.Take(2)));
+            }
+
+            // Strategy 3: Try with just first significant word
+            if (significantWords.Count >= 1)
+            {
+                terms.Add(significantWords[0]);
+            }
+            else if (words.Length >= 1 && words[0].Length >= 3)
+            {
+                // Fallback to first word if at least 3 chars
+                terms.Add(words[0]);
+            }
+
+            return terms;
+        }
+
+        private static bool CheckTitleMatchWords(string queryStr, string title, string originalQuery)
         {
             // this code split the words, remove words with 2 letters or less, remove accents and lowercase
             var queryMatches = Regex.Matches(queryStr, @"\b[\w']*\b");
@@ -280,7 +440,36 @@ namespace Jackett.Common.Indexers.Definitions
                              where !string.IsNullOrEmpty(m.Value) && m.Value.Length > 2
                              select Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower()));
             titleWords = titleWords.ToArray();
-            return queryWords.All(word => titleWords.Contains(word));
+
+            var queryWordsList = queryWords.ToList();
+
+            // If using fallback (queryStr is shorter than originalQuery), be more strict
+            // Require at least 2 matching words to avoid false positives
+            var originalWords = Regex.Matches(originalQuery, @"\b[\w']+\b").Cast<Match>()
+                .Select(m => Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower())))
+                .Where(w => w.Length > 2 && !Regex.IsMatch(w, @"^\d{4}$")) // Exclude years (4-digit numbers)
+                .ToList();
+
+            var originalWordCount = originalWords.Count;
+
+            if (queryWordsList.Count < originalWordCount)
+            {
+                // Using fallback: require matching based on original query size
+                var matchCount = originalWords.Count(word => titleWords.Contains(word));
+
+                if (originalWordCount == 2)
+                {
+                    // For 2-word queries, require both words to match
+                    return matchCount == 2;
+                }
+                else if (originalWordCount > 2)
+                {
+                    // For longer queries, require at least 2 words to match
+                    return matchCount >= 2;
+                }
+            }
+
+            return queryWordsList.All(word => titleWords.Contains(word));
         }
 
         private async Task<List<Download>> GetDownloadUrlsAsync(Uri link, string postType, bool isLatest)
@@ -454,6 +643,8 @@ namespace Jackett.Common.Indexers.Definitions
         {
             [JsonPropertyName("title")]
             public string Title { get; set; }
+            [JsonPropertyName("original_title")]
+            public string OriginalTitle { get; set; }
 
             [JsonPropertyName("slug")]
             public string Slug { get; set; }
