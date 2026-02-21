@@ -128,6 +128,14 @@ namespace Jackett.Common.Indexers.Definitions
                         parsedSeason = ParseUtil.CoerceInt(seasonEpisodeAltMatch.Groups[1].Value);
                         parsedEpisode = seasonEpisodeAltMatch.Groups[2].Value;
                     }
+                    else
+                    {
+                        var seasonOnlyMatch = Regex.Match(rawSearchTerm, @"\b[Ss](\d{1,2})\b");
+                        if (seasonOnlyMatch.Success)
+                        {
+                            parsedSeason = ParseUtil.CoerceInt(seasonOnlyMatch.Groups[1].Value);
+                        }
+                    }
                 }
             }
 
@@ -166,6 +174,8 @@ namespace Jackett.Common.Indexers.Definitions
                 rawSearchTerm = Regex.Replace(rawSearchTerm, @"\s+[Ss]\d{1,2}[Ee]\d{1,2}$", "").Trim();
                 // Remove patterns like 1x01, 1X01
                 rawSearchTerm = Regex.Replace(rawSearchTerm, @"\s+\d{1,2}[xX]\d{1,2}$", "").Trim();
+                // Remove patterns like S02, s02 (season-only)
+                rawSearchTerm = Regex.Replace(rawSearchTerm, @"\s+[Ss]\d{1,2}$", "").Trim();
             }
 
             // Limit search term to 16 characters to match the website's search API behavior for better title matching
@@ -349,8 +359,8 @@ namespace Jackett.Common.Indexers.Definitions
                 }
                 
                 // Early exit if we have enough results for specific episode searches
-                var hasSpecificEpisode = queryForFilters?.Season > 0 || !string.IsNullOrWhiteSpace(queryForFilters?.Episode);
-                if (hasSpecificEpisode && releases.Count >= 10)
+                var hasEpisodeRequest = !string.IsNullOrWhiteSpace(queryForFilters?.Episode);
+                if (hasEpisodeRequest && releases.Count >= 10)
                 {
                     logger.Debug($"Early exit: Found {releases.Count} releases across postTypes, stopping search");
                     break;
@@ -370,12 +380,21 @@ namespace Jackett.Common.Indexers.Definitions
                 return new();
             }
 
-            // For specific episode searches, limit how many shows we process to avoid excessive API calls
-            var hasSpecificEpisode = query?.Season > 0 || !string.IsNullOrWhiteSpace(query?.Episode);
-            var maxShowsToProcess = hasSpecificEpisode ? 3 : int.MaxValue; // Only check first 3 shows for specific episodes
+            // For episode-specific searches, limit how many shows we process to avoid excessive API calls
+            var hasEpisodeRequest = !string.IsNullOrWhiteSpace(query?.Episode);
+            var hasSeasonRequest = query?.Season > 0;
+            var maxShowsToProcess = hasEpisodeRequest ? 3 : int.MaxValue; // Only limit for episode-specific searches
             var showsProcessed = 0;
-            var minReleasesForEarlyExit = hasSpecificEpisode ? 10 : int.MaxValue; // Stop after finding 10 releases for specific episode
+            var minReleasesForEarlyExit = hasEpisodeRequest ? 10 : int.MaxValue; // Stop after finding 10 releases for episode-specific search
             var foundExactMatch = false;
+
+            var normalizedSearchTerm = originalSearchTerm?.Trim().ToLowerInvariant();
+            if (!string.IsNullOrWhiteSpace(normalizedSearchTerm))
+            {
+                posts = posts
+                    .OrderByDescending(post => IsExactTitleMatch(normalizedSearchTerm, post))
+                    .ToList();
+            }
 
             foreach (var post in posts)
             {
@@ -411,10 +430,7 @@ namespace Jackett.Common.Indexers.Definitions
                     
                     // Check for exact match (case-insensitive, normalized)
                     var normalizedSearch = originalSearchTerm.Trim().ToLowerInvariant();
-                    var normalizedTitle = post.Title?.Trim().ToLowerInvariant() ?? "";
-                    var normalizedOriginalTitle = post.OriginalTitle?.Trim().ToLowerInvariant() ?? "";
-                    
-                    if (normalizedTitle == normalizedSearch || normalizedOriginalTitle == normalizedSearch)
+                    if (IsExactTitleMatch(normalizedSearch, post))
                     {
                         foundExactMatch = true;
                     }
@@ -491,8 +507,8 @@ namespace Jackett.Common.Indexers.Definitions
                     };
                 }));
 
-                // Early exit optimizations for specific episode searches
-                if (hasSpecificEpisode)
+                // Early exit optimizations for episode/season searches
+                if (hasEpisodeRequest || hasSeasonRequest)
                 {
                     // Stop immediately if we found an exact title match and got releases
                     if (foundExactMatch && releases.Count > 0)
@@ -501,15 +517,15 @@ namespace Jackett.Common.Indexers.Definitions
                         break;
                     }
                     
-                    // Stop if we've found enough releases
-                    if (releases.Count >= minReleasesForEarlyExit)
+                    // Stop if we've found enough releases for episode-specific requests
+                    if (hasEpisodeRequest && releases.Count >= minReleasesForEarlyExit)
                     {
                         logger.Debug($"Early exit: Found {releases.Count} releases for specific episode search");
                         break;
                     }
                     
-                    // Stop if we've processed enough shows without finding matches
-                    if (showsProcessed >= maxShowsToProcess && releases.Count == 0)
+                    // Stop if we've processed enough shows without finding matches (episode-specific only)
+                    if (hasEpisodeRequest && showsProcessed >= maxShowsToProcess && releases.Count == 0)
                     {
                         logger.Debug($"Early exit: Processed {showsProcessed} shows without finding specific episode");
                         break;
@@ -770,6 +786,18 @@ namespace Jackett.Common.Indexers.Definitions
             return queryWordsList.All(word => titleWords.Contains(word));
         }
 
+        private static bool IsExactTitleMatch(string normalizedSearch, Post post)
+        {
+            if (string.IsNullOrWhiteSpace(normalizedSearch) || post == null)
+            {
+                return false;
+            }
+
+            var normalizedTitle = post.Title?.Trim().ToLowerInvariant() ?? string.Empty;
+            var normalizedOriginalTitle = post.OriginalTitle?.Trim().ToLowerInvariant() ?? string.Empty;
+            return normalizedTitle == normalizedSearch || normalizedOriginalTitle == normalizedSearch;
+        }
+
         private async Task<List<Download>> GetDownloadUrlsAsync(Uri link, string postType, bool isLatest, TorznabQuery query = null)
         {
             var details = await RequestWithCookiesAndRetryAsync(
@@ -792,7 +820,8 @@ namespace Jackett.Common.Indexers.Definitions
             var cutoffDate = DateTime.MinValue;
             var requestedSeason = query?.Season ?? 0;
             var requestedEpisode = !string.IsNullOrWhiteSpace(query?.Episode) ? ParseUtil.CoerceInt(query.Episode) : 0;
-            var hasSpecificRequest = requestedSeason > 0 || requestedEpisode > 0;
+            var hasEpisodeRequest = requestedEpisode > 0;
+            var hasSeasonRequest = requestedSeason > 0;
             
             if (isLatest)
             {
@@ -801,7 +830,7 @@ namespace Jackett.Common.Indexers.Definitions
                 targetCount = maxEpisodesPerSeries > 0 ? maxEpisodesPerSeries : int.MaxValue;
                 cutoffDate = DateTime.Now.AddDays(-7);
             }
-            else if (hasSpecificRequest)
+            else if (hasEpisodeRequest)
             {
                 // When searching for specific episode, only fetch that one
                 targetCount = 1;
@@ -826,7 +855,7 @@ namespace Jackett.Common.Indexers.Definitions
                 .ToList();
             
             // If specific season requested, only fetch that season
-            if (requestedSeason > 0)
+            if (hasSeasonRequest)
             {
                 seasonNumbers = seasonNumbers.Where(s => s == requestedSeason).ToList();
             }
@@ -847,11 +876,11 @@ namespace Jackett.Common.Indexers.Definitions
                 }
 
                 // For specific episode requests, search from first page (episodes are usually ordered)
-                var startPage = hasSpecificRequest ? 1 : lastPage;
-                var endPage = hasSpecificRequest ? lastPage : 1;
-                var pageIncrement = hasSpecificRequest ? 1 : -1;
+                var startPage = hasEpisodeRequest ? 1 : lastPage;
+                var endPage = hasEpisodeRequest ? lastPage : 1;
+                var pageIncrement = hasEpisodeRequest ? 1 : -1;
 
-                for (var page = startPage; hasSpecificRequest ? page <= endPage : page >= endPage; page += pageIncrement)
+                for (var page = startPage; hasEpisodeRequest ? page <= endPage : page >= endPage; page += pageIncrement)
                 {
                     if (allEpisodes.Count >= targetCount)
                     {
