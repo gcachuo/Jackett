@@ -256,6 +256,7 @@ namespace Jackett.Updater
                 "Definitions/acgsou.yml",
                 "Definitions/acidlounge.yml",
                 "Definitions/adbt.yml",
+                "Definitions/afun.yml",
                 "Definitions/aither.yml", // switch to *-API #8682
                 "Definitions/alein.yml",
                 "Definitions/alexfilm.yml",
@@ -513,6 +514,7 @@ namespace Jackett.Updater
                 "Definitions/idope.yml",
                 "Definitions/idopeclone.yml",
                 "Definitions/ihdbits.yml",
+                "Definitions/ilcorsaronero.yml",
                 "Definitions/ilcorsaroverde.yml",
                 "Definitions/ilolicon.yml",
                 "Definitions/iloveclassics.yml",
@@ -525,6 +527,7 @@ namespace Jackett.Updater
                 "Definitions/iv-torrents.yml",
                 "Definitions/jme-reunit3d.yml", // switch to -API #13043
                 "Definitions/jav-torrent.yml",
+                "Definitions/joyhd.yml",
                 "Definitions/jptv.yml", // switch to -API #9242
                 "Definitions/jptv-api.yml",
                 "Definitions/kapaki.yml",
@@ -605,6 +608,7 @@ namespace Jackett.Updater
                 "Definitions/nnm-club.yml", // renamed to noname-club
                 "Definitions/nntt.yml",
                 "Definitions/nordicplus.yml",
+                "Definitions/nortorrent.yml",
                 "Definitions/nostalgic.yml", // renamed to vhstapes
                 "Definitions/ntelogo.yml",
                 "Definitions/nusantarare.yml",
@@ -627,6 +631,7 @@ namespace Jackett.Updater
                 "Definitions/p2pelite.yml",
                 "Definitions/pandahd.yml",
                 "Definitions/parabellumhd.yml",
+                "Definitions/parabellumhd-api.yml",
                 "Definitions/parnuxi.yml",
                 "Definitions/partis.yml",
                 "Definitions/passionetorrent.yml",
@@ -726,6 +731,7 @@ namespace Jackett.Updater
                 "Definitions/skytorrents.yml",
                 "Definitions/skytorrentsclone.yml", // renamed to skytorrents-lol
                 "Definitions/skytorrentsclone2.yml", // renamed to skytorrents-to
+                "Definitions/slobitmedia-api.yml",
                 "Definitions/slosoul.yml",
                 "Definitions/solidtorrents.yml", // merged with bitsearch
                 "Definitions/soundpark.yml",
@@ -735,12 +741,12 @@ namespace Jackett.Updater
                 "Definitions/spidertk.yml",
                 "Definitions/sporthd.yml",
                 "Definitions/sportscraze.yml",
-                "Definitions/sugoimusic.yml",
                 "Definitions/sukebei-pantsu.yml",
                 "Definitions/swarmazon.yml", //  switched to *-API #13725
                 "Definitions/t411.yml",
                 "Definitions/t411v2.yml",
                 "Definitions/takeabyte.yml",
+                "Definitions/tangmen.yml",
                 "Definitions/tazmaniaden.yml",
                 "Definitions/tbplus.yml",
                 "Definitions/tehconnection.yml",
@@ -836,6 +842,7 @@ namespace Jackett.Updater
                 "Definitions/turknova.yml",
                 "Definitions/turkseed.yml",
                 "Definitions/turktracker.yml",
+                "Definitions/tvchaosuk.yml",
                 "Definitions/tvroad.yml",
                 "Definitions/twilight.yml",
                 "Definitions/twilightszoom.yml",
