@@ -51,6 +51,7 @@ namespace Jackett.Common.Indexers.Definitions
     public class PelisPandaRequestGenerator : IIndexerRequestGenerator
     {
         private const int PostsPerPage = 500;
+        private const int PostsPerPageLatest = 5;
         private const int Page = 1;
 
         private readonly string _siteLink;
@@ -76,8 +77,19 @@ namespace Jackett.Common.Indexers.Definitions
             _parser.SetQuery(query);
 
             var term = query.SearchTerm ?? string.Empty;
+
+            // If no search term, get latest releases from all content types (5 per type = 15 total)
             if (string.IsNullOrWhiteSpace(term))
+            {
+                var moviesUrl = $"{_siteLink}wp-json/wpreact/v1/movies?posts_per_page={PostsPerPageLatest}&page={Page}";
+                var seriesUrl = $"{_siteLink}wp-json/wpreact/v1/series?posts_per_page={PostsPerPageLatest}&page={Page}";
+                var animesUrl = $"{_siteLink}wp-json/wpreact/v1/animes?posts_per_page={PostsPerPageLatest}&page={Page}";
+
+                chain.Add(new[] { new IndexerRequest(moviesUrl) });
+                chain.Add(new[] { new IndexerRequest(seriesUrl) });
+                chain.Add(new[] { new IndexerRequest(animesUrl) });
                 return chain;
+            }
 
             // Extract year from search term
             int? searchYear = null;
@@ -238,17 +250,43 @@ namespace Jackett.Common.Indexers.Definitions
                 return new List<ReleaseInfo>();
             }
 
-            JObject json;
+            JArray results;
             try
             {
-                json = JObject.Parse(indexerResponse.Content);
+                var json = JObject.Parse(indexerResponse.Content);
+
+                // Handle search endpoint format (with "results" field)
+                results = json["results"] as JArray;
+
+                // If no "results" field, try listing endpoints format (movies/series/animes)
+                if (results == null)
+                {
+                    results = json["movies"] as JArray
+                           ?? json["series"] as JArray
+                           ?? json["animes"] as JArray;
+                }
+
+                // If still null, try parsing as direct array
+                if (results == null)
+                {
+                    try
+                    {
+                        results = JArray.Parse(indexerResponse.Content);
+                    }
+                    catch
+                    {
+                        results = new JArray();
+                    }
+                }
             }
             catch (Exception ex)
             {
                 _logger?.Warn(ex, "PelisPanda: failed to parse search response as JSON; returning no releases");
                 return new List<ReleaseInfo>();
             }
-            var results = json["results"] as JArray ?? new JArray();
+
+            if (results == null)
+                results = new JArray();
 
             // Get normalized search term for filtering
             var searchTerm = _currentQuery?.SearchTerm?.Trim();
@@ -304,7 +342,7 @@ namespace Jackett.Common.Indexers.Definitions
                 BuildReleasesForItem(entry.Item, entry.Type, detail, seenGuids, releases, _currentQuery);
 
                 // Early exit if we found exact match and have results for episode searches
-                if (foundExactMatch && releases.Count > 0 && 
+                if (foundExactMatch && releases.Count > 0 &&
                     (_currentQuery?.Season > 0 || !string.IsNullOrWhiteSpace(_currentQuery?.Episode)))
                 {
                     _logger?.Debug($"Early exit: Found exact title match with {releases.Count} releases");
