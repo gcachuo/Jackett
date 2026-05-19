@@ -775,19 +775,26 @@ namespace Jackett.Common.Indexers.Definitions
                     return null;
                 }
 
-                // If year is specified, prefer exact year match
-                TmdbResult matchingResult = null;
+                // If year is specified, ONLY return results that match the year
+                TmdbResult result = null;
                 if (year.HasValue)
                 {
-                    matchingResult = json.Results.FirstOrDefault(r =>
+                    result = json.Results.FirstOrDefault(r =>
                     {
                         var releaseYear = r.ReleaseDate?.Substring(0, 4);
                         return releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value;
                     });
+                    
+                    // If year specified but no match found, return null instead of wrong result
+                    if (result == null)
+                        return null;
+                }
+                else
+                {
+                    // No year specified, use first result
+                    result = json.Results[0];
                 }
 
-                // Use first result if no exact year match
-                var result = matchingResult ?? json.Results[0];
                 return result.Title ?? result.Name;
             }
             catch (Exception ex)

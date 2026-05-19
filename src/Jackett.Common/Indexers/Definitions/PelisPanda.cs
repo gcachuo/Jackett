@@ -168,6 +168,8 @@ namespace Jackett.Common.Indexers.Definitions
                 if (year.HasValue)
                     tvUrl += $"&first_air_date_year={year.Value}";
 
+                _logger?.Debug($"TMDB TV search: query='{englishTitle}', year={year?.ToString() ?? "null"}");
+
                 var tvRequest = new WebRequest(tvUrl);
                 var tvResponse = await _webclient.GetResultAsync(tvRequest).ConfigureAwait(false);
                 
@@ -176,7 +178,7 @@ namespace Jackett.Common.Indexers.Definitions
                     var tvJson = JsonSerializer.Deserialize<TmdbSearchResponse>(tvResponse.ContentString);
                     if (tvJson?.Results != null && tvJson.Results.Count > 0)
                     {
-                        // If year is specified, prefer exact year match
+                        // If year is specified, ONLY return results that match the year
                         if (year.HasValue)
                         {
                             var yearMatch = tvJson.Results.FirstOrDefault(r =>
@@ -184,10 +186,10 @@ namespace Jackett.Common.Indexers.Definitions
                                 var firstAirYear = r.FirstAirDate?.Substring(0, 4);
                                 return firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value;
                             });
-                            if (yearMatch != null)
-                                return yearMatch.Title ?? yearMatch.Name;
+                            // Only return if we found a year match, otherwise return null
+                            return yearMatch != null ? (yearMatch.Title ?? yearMatch.Name) : null;
                         }
-                        // Return first TV result
+                        // If no year specified, return first TV result
                         return tvJson.Results[0].Title ?? tvJson.Results[0].Name;
                     }
                 }
