@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -359,6 +360,24 @@ namespace Jackett.Common.Indexers.Definitions
                     _logger?.Warn($"PelisPanda: skipping unknown type '{type}' for slug '{slug}'");
                     continue;
                 }
+
+                // Filter results by title matching (like LaMovie)
+                if (!string.IsNullOrWhiteSpace(normalizedSearchTerm))
+                {
+                    var title = (string)raw["title"];
+                    var originalTitle = (string)raw["original_title"];
+
+                    var matchesTitle = CheckTitleMatchWords(normalizedSearchTerm, title, normalizedSearchTerm);
+                    var matchesOriginalTitle = !string.IsNullOrWhiteSpace(originalTitle) &&
+                                               CheckTitleMatchWords(normalizedSearchTerm, originalTitle, normalizedSearchTerm);
+
+                    if (!matchesTitle && !matchesOriginalTitle)
+                    {
+                        // Skip if it doesn't match either title
+                        continue;
+                    }
+                }
+
                 items.Add((items.Count, raw, detailUrl, type));
             }
 
@@ -401,6 +420,50 @@ namespace Jackett.Common.Indexers.Definitions
             return releases;
         }
 
+        private static bool CheckTitleMatchWords(string queryStr, string title, string originalQuery)
+        {
+            // this code split the words, remove words with 2 letters or less, remove accents and lowercase
+            var queryMatches = Regex.Matches(queryStr, @"\b[\w']*\b");
+            var queryWords = from m in queryMatches.Cast<Match>()
+                             where !string.IsNullOrEmpty(m.Value) && (m.Value.Length > 2 || char.IsDigit(m.Value[0]))
+                             select Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower()));
+            var titleMatches = Regex.Matches(title, @"\b[\w']*\b");
+            var titleWords = from m in titleMatches.Cast<Match>()
+                             where !string.IsNullOrEmpty(m.Value) && (m.Value.Length > 2 || char.IsDigit(m.Value[0]))
+                             select Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower()));
+            titleWords = titleWords.ToArray();
+
+            var queryWordsList = queryWords.ToList();
+
+            // If using fallback (queryStr is shorter than originalQuery), be more strict
+            // Require at least 2 matching words to avoid false positives
+            var originalWords = Regex.Matches(originalQuery, @"\b[\w']+\b").Cast<Match>()
+                .Select(m => Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower())))
+                .Where(w => (w.Length > 2 || char.IsDigit(w[0])) && !Regex.IsMatch(w, @"^\d{4}$")) // Exclude years (4-digit numbers)
+                .ToList();
+
+            var originalWordCount = originalWords.Count;
+
+            if (queryWordsList.Count < originalWordCount)
+            {
+                // Using fallback: require matching based on original query size
+                var matchCount = originalWords.Count(word => titleWords.Contains(word));
+
+                if (originalWordCount == 2)
+                {
+                    // For 2-word queries, require both words to match
+                    return matchCount == 2;
+                }
+                else if (originalWordCount > 2)
+                {
+                    // For longer queries, require at least 2 words to match
+                    return matchCount >= 2;
+                }
+            }
+
+            return queryWordsList.All(word => titleWords.Contains(word));
+        }
+
         private static bool IsExactTitleMatch(string normalizedSearch, JObject item)
         {
             if (string.IsNullOrWhiteSpace(normalizedSearch) || item == null)
@@ -410,58 +473,7 @@ namespace Jackett.Common.Indexers.Definitions
 
             var normalizedTitle = ((string)item["title"])?.Trim().ToLowerInvariant() ?? string.Empty;
             var normalizedOriginalTitle = ((string)item["original_title"])?.Trim().ToLowerInvariant() ?? string.Empty;
-
-            // First try exact match
-            if (normalizedTitle == normalizedSearch || normalizedOriginalTitle == normalizedSearch)
-                return true;
-
-            // Fuzzy match: normalize by removing punctuation and extra spaces
-            var cleanSearch = Regex.Replace(normalizedSearch, @"[^\w\s]", " ");
-            cleanSearch = Regex.Replace(cleanSearch, @"\s+", " ").Trim();
-
-            var cleanTitle = Regex.Replace(normalizedTitle, @"[^\w\s]", " ");
-            cleanTitle = Regex.Replace(cleanTitle, @"\s+", " ").Trim();
-
-            var cleanOriginalTitle = Regex.Replace(normalizedOriginalTitle, @"[^\w\s]", " ");
-            cleanOriginalTitle = Regex.Replace(cleanOriginalTitle, @"\s+", " ").Trim();
-
-            // Check if cleaned versions match
-            if (cleanTitle == cleanSearch || cleanOriginalTitle == cleanSearch)
-                return true;
-
-            // Check if search words are contained in title (for partial matches)
-            var searchWords = cleanSearch.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            if (searchWords.Length >= 1)
-            {
-                var titleWords = new HashSet<string>(cleanTitle.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
-                var originalTitleWords = new HashSet<string>(cleanOriginalTitle.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
-
-                // Filter out common stop words
-                var stopWords = new HashSet<string> { "el", "la", "los", "las", "de", "del", "y", "e", "o", "un", "una", "the", "a", "an", "and", "or", "of" };
-                var meaningfulSearchWords = searchWords.Where(w => !stopWords.Contains(w) && w.Length > 2).ToArray();
-
-                if (meaningfulSearchWords.Length > 0)
-                {
-                    var titleMatches = meaningfulSearchWords.Count(w => titleWords.Contains(w));
-                    var originalTitleMatches = meaningfulSearchWords.Count(w => originalTitleWords.Contains(w));
-
-                    // Use 40% threshold but require at least 2 matching words for multi-word searches
-                    // This helps match TMDB translations like "Avatar: Aang, El último Maestro Aire"
-                    // with either "Avatar: La leyenda de Aang" (Spanish) or "Avatar: The Last Airbender" (original)
-                    var matchThreshold = Math.Max(1, (int)Math.Ceiling(meaningfulSearchWords.Length * 0.4));
-
-                    // For searches with 3+ words, require at least 2 matches to avoid false positives
-                    if (meaningfulSearchWords.Length >= 3)
-                    {
-                        matchThreshold = Math.Max(2, matchThreshold);
-                    }
-
-                    if (titleMatches >= matchThreshold || originalTitleMatches >= matchThreshold)
-                        return true;
-                }
-            }
-
-            return false;
+            return normalizedTitle == normalizedSearch || normalizedOriginalTitle == normalizedSearch;
         }
 
         private string BuildDetailUrl(string type, string slug)
