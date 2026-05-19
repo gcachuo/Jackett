@@ -131,42 +131,65 @@ namespace Jackett.Common.Indexers.Definitions
 
             try
             {
-                var searchUrl = $"https://api.themoviedb.org/3/search/multi?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
+                // Try movie search first (more common for PelisPanda)
+                var movieUrl = $"https://api.themoviedb.org/3/search/movie?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
                 if (year.HasValue)
-                    searchUrl += $"&year={year.Value}";
+                    movieUrl += $"&year={year.Value}";
 
-                var request = new WebRequest(searchUrl);
-                var response = await _webclient.GetResultAsync(request).ConfigureAwait(false);
+                var movieRequest = new WebRequest(movieUrl);
+                var movieResponse = await _webclient.GetResultAsync(movieRequest).ConfigureAwait(false);
                 
-                if (response.Status != HttpStatusCode.OK)
-                    return null;
-
-                var json = JsonSerializer.Deserialize<TmdbSearchResponse>(response.ContentString);
-                if (json?.Results == null || json.Results.Count == 0)
-                    return null;
-
-                // Filter by year and prefer movies/TV shows
-                TmdbResult matchingResult = null;
-                if (year.HasValue)
+                if (movieResponse.Status == HttpStatusCode.OK)
                 {
-                    matchingResult = json.Results.FirstOrDefault(r =>
+                    var movieJson = JsonSerializer.Deserialize<TmdbSearchResponse>(movieResponse.ContentString);
+                    if (movieJson?.Results != null && movieJson.Results.Count > 0)
                     {
-                        var releaseYear = r.ReleaseDate?.Substring(0, 4);
-                        var firstAirYear = r.FirstAirDate?.Substring(0, 4);
-                        var matchesYear = (releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value) ||
-                                         (firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value);
-                        var isMovieOrTv = r.MediaType == "movie" || r.MediaType == "tv";
-                        return matchesYear && isMovieOrTv;
-                    });
+                        // If year is specified, prefer exact year match
+                        if (year.HasValue)
+                        {
+                            var yearMatch = movieJson.Results.FirstOrDefault(r =>
+                            {
+                                var releaseYear = r.ReleaseDate?.Substring(0, 4);
+                                return releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value;
+                            });
+                            if (yearMatch != null)
+                                return yearMatch.Title ?? yearMatch.Name;
+                        }
+                        // Return first movie result
+                        return movieJson.Results[0].Title ?? movieJson.Results[0].Name;
+                    }
                 }
 
-                // If no year match, prefer first movie or TV result
-                if (matchingResult == null)
-                    matchingResult = json.Results.FirstOrDefault(r => r.MediaType == "movie" || r.MediaType == "tv");
+                // Try TV search if no movie results
+                var tvUrl = $"https://api.themoviedb.org/3/search/tv?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
+                if (year.HasValue)
+                    tvUrl += $"&first_air_date_year={year.Value}";
 
-                // Fallback to first result
-                var result = matchingResult ?? json.Results[0];
-                return result.Title ?? result.Name;
+                var tvRequest = new WebRequest(tvUrl);
+                var tvResponse = await _webclient.GetResultAsync(tvRequest).ConfigureAwait(false);
+                
+                if (tvResponse.Status == HttpStatusCode.OK)
+                {
+                    var tvJson = JsonSerializer.Deserialize<TmdbSearchResponse>(tvResponse.ContentString);
+                    if (tvJson?.Results != null && tvJson.Results.Count > 0)
+                    {
+                        // If year is specified, prefer exact year match
+                        if (year.HasValue)
+                        {
+                            var yearMatch = tvJson.Results.FirstOrDefault(r =>
+                            {
+                                var firstAirYear = r.FirstAirDate?.Substring(0, 4);
+                                return firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value;
+                            });
+                            if (yearMatch != null)
+                                return yearMatch.Title ?? yearMatch.Name;
+                        }
+                        // Return first TV result
+                        return tvJson.Results[0].Title ?? tvJson.Results[0].Name;
+                    }
+                }
+
+                return null;
             }
             catch (Exception ex)
             {
