@@ -250,6 +250,17 @@ namespace Jackett.Common.Indexers.Definitions
             }
             var results = json["results"] as JArray ?? new JArray();
 
+            // Get normalized search term for filtering
+            var searchTerm = _currentQuery?.SearchTerm?.Trim();
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                // Remove year and episode patterns from search term for matching
+                searchTerm = Regex.Replace(searchTerm, @"\b(19\d{2}|20\d{2})\b", "").Trim();
+                searchTerm = Regex.Replace(searchTerm, @"\s+[Ss]\d{1,2}[Ee]\d{1,2}$", "").Trim();
+                searchTerm = Regex.Replace(searchTerm, @"\s+\d{1,2}[xX]\d{1,2}$", "").Trim();
+            }
+            var normalizedSearchTerm = searchTerm?.ToLowerInvariant();
+
             var items = new List<(int Index, JObject Item, string DetailUrl, string Type)>();
             foreach (var raw in results.OfType<JObject>())
             {
@@ -264,18 +275,55 @@ namespace Jackett.Common.Indexers.Definitions
                 items.Add((items.Count, raw, detailUrl, type));
             }
 
+            // Sort results to prioritize exact title matches
+            if (!string.IsNullOrWhiteSpace(normalizedSearchTerm))
+            {
+                items = items
+                    .OrderByDescending(item => IsExactTitleMatch(normalizedSearchTerm, item.Item))
+                    .ToList();
+            }
+
             var details = FetchDetailsAsync(items.Select(i => i.DetailUrl).Distinct().ToList())
                 .GetAwaiter().GetResult();
 
             var seenGuids = new HashSet<string>();
             var releases = new List<ReleaseInfo>();
+            var foundExactMatch = false;
+
             foreach (var entry in items)
             {
                 if (!details.TryGetValue(entry.DetailUrl, out var detail) || detail == null)
                     continue;
+
+                // Check if this is an exact match
+                if (!foundExactMatch && !string.IsNullOrWhiteSpace(normalizedSearchTerm))
+                {
+                    foundExactMatch = IsExactTitleMatch(normalizedSearchTerm, entry.Item);
+                }
+
                 BuildReleasesForItem(entry.Item, entry.Type, detail, seenGuids, releases, _currentQuery);
+
+                // Early exit if we found exact match and have results for episode searches
+                if (foundExactMatch && releases.Count > 0 && 
+                    (_currentQuery?.Season > 0 || !string.IsNullOrWhiteSpace(_currentQuery?.Episode)))
+                {
+                    _logger?.Debug($"Early exit: Found exact title match with {releases.Count} releases");
+                    break;
+                }
             }
             return releases;
+        }
+
+        private static bool IsExactTitleMatch(string normalizedSearch, JObject item)
+        {
+            if (string.IsNullOrWhiteSpace(normalizedSearch) || item == null)
+            {
+                return false;
+            }
+
+            var normalizedTitle = ((string)item["title"])?.Trim().ToLowerInvariant() ?? string.Empty;
+            var normalizedOriginalTitle = ((string)item["original_title"])?.Trim().ToLowerInvariant() ?? string.Empty;
+            return normalizedTitle == normalizedSearch || normalizedOriginalTitle == normalizedSearch;
         }
 
         private string BuildDetailUrl(string type, string slug)
