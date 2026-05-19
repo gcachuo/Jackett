@@ -138,10 +138,10 @@ namespace Jackett.Common.Indexers.Definitions
                     movieUrl += $"&year={year.Value}";
 
                 _logger?.Debug($"TMDB movie search: query='{englishTitle}', year={year?.ToString() ?? "null"}");
-                
+
                 var movieRequest = new WebRequest(movieUrl);
                 var movieResponse = await _webclient.GetResultAsync(movieRequest).ConfigureAwait(false);
-                
+
                 if (movieResponse.Status == HttpStatusCode.OK)
                 {
                     var movieJson = JsonSerializer.Deserialize<TmdbSearchResponse>(movieResponse.ContentString);
@@ -172,7 +172,7 @@ namespace Jackett.Common.Indexers.Definitions
 
                 var tvRequest = new WebRequest(tvUrl);
                 var tvResponse = await _webclient.GetResultAsync(tvRequest).ConfigureAwait(false);
-                
+
                 if (tvResponse.Status == HttpStatusCode.OK)
                 {
                     var tvJson = JsonSerializer.Deserialize<TmdbSearchResponse>(tvResponse.ContentString);
@@ -383,9 +383,9 @@ namespace Jackett.Common.Indexers.Definitions
                 {
                     // If query has season/episode requirements, check if this download matches
                     var seasonMatch = query.Season == 0 || (season.HasValue && query.Season == season.Value);
-                    var episodeMatch = string.IsNullOrWhiteSpace(query.Episode) || 
+                    var episodeMatch = string.IsNullOrWhiteSpace(query.Episode) ||
                                       (episode.HasValue && query.Episode == episode.Value.ToString());
-                    
+
                     if (!seasonMatch || !episodeMatch)
                         continue; // Skip this download if it doesn't match the requested episode
                 }
@@ -415,7 +415,7 @@ namespace Jackett.Common.Indexers.Definitions
                     Title = FormatTitle(titleBase, year, quality, language, season, episode),
                     Category = new List<int> { category },
                     Size = ResolveSize(sizeStr, quality),
-                    Languages = string.IsNullOrWhiteSpace(language) ? null : new[] { language },
+                    Languages = TranslateLanguages(language),
                     Subs = subsFlag == 1 ? new[] { "Subtitulado" } : null,
                     MagnetUri = magnetUri,
                     Link = linkUri,
@@ -429,6 +429,27 @@ namespace Jackett.Common.Indexers.Definitions
                 };
                 releases.Add(release);
             }
+        }
+
+        internal static string[] TranslateLanguages(string language)
+        {
+            if (string.IsNullOrWhiteSpace(language))
+                return null;
+
+            var languages = language.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(lang => lang.Trim())
+                .Select(lang => lang switch
+                {
+                    "Inglés" => "English",
+                    "Castellano" => "Spanish",
+                    "Latino" => "Latino",
+                    "Español" => "Spanish",
+                    _ => lang
+                })
+                .Where(lang => !string.IsNullOrWhiteSpace(lang))
+                .ToArray();
+
+            return languages.Length > 0 ? languages : null;
         }
 
         internal static int MapCategory(string type) => type switch
@@ -457,8 +478,8 @@ namespace Jackett.Common.Indexers.Definitions
             }
 
             var formattedQuality = !string.IsNullOrWhiteSpace(quality) ? quality : "";
-            
-            var formattedLanguage = !string.IsNullOrWhiteSpace(language) 
+
+            var formattedLanguage = !string.IsNullOrWhiteSpace(language)
                 ? Regex.Replace(
                     language.Replace("/", "."),
                     @"\bInglés\b|\bCastellano\b",
@@ -469,7 +490,7 @@ namespace Jackett.Common.Indexers.Definitions
                         _ => m.Value
                     })
                 : "";
-            
+
             if (!string.IsNullOrWhiteSpace(formattedQuality))
             {
                 parts.Add(formattedQuality);
