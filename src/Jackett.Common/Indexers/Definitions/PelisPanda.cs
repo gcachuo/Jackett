@@ -113,12 +113,15 @@ namespace Jackett.Common.Indexers.Definitions
             // Note: We do NOT add season/episode to the search term
             // The API search is broader, and we filter results in the parser
 
-            // Try original term first
-            var url = $"{_siteLink}wp-json/wpreact/v1/search" +
-                      $"?query={WebUtility.UrlEncode(term)}" +
-                      $"&posts_per_page={PostsPerPage}" +
-                      $"&page={Page}";
-            chain.Add(new[] { new IndexerRequest(url) });
+            // Try original term with progressive fallback (similar to LaMovie)
+            foreach (var searchTerm in GetProgressiveFallbackTerms(term))
+            {
+                var url = $"{_siteLink}wp-json/wpreact/v1/search" +
+                          $"?query={WebUtility.UrlEncode(searchTerm)}" +
+                          $"&posts_per_page={PostsPerPage}" +
+                          $"&page={Page}";
+                chain.Add(new[] { new IndexerRequest(url) });
+            }
 
             // Try TMDB translation as fallback
             var tmdbTranslated = GetSpanishTitleFromTmdbAsync(term, searchYear).GetAwaiter().GetResult();
@@ -126,14 +129,74 @@ namespace Jackett.Common.Indexers.Definitions
             {
                 var yearInfo = searchYear.HasValue ? $" ({searchYear.Value})" : "";
                 _logger?.Info($"TMDB translated '{term}'{yearInfo} to '{tmdbTranslated}'");
-                var tmdbUrl = $"{_siteLink}wp-json/wpreact/v1/search" +
-                              $"?query={WebUtility.UrlEncode(tmdbTranslated)}" +
-                              $"&posts_per_page={PostsPerPage}" +
-                              $"&page={Page}";
-                chain.Add(new[] { new IndexerRequest(tmdbUrl) });
+
+                // Extract first 2-3 significant words from TMDB translation for better API matching
+                // This helps avoid overly specific searches that return no results
+                var tmdbWords = Regex.Matches(tmdbTranslated, @"\b[\w']+\b")
+                    .Cast<Match>()
+                    .Select(m => m.Value)
+                    .Where(w => w.Length > 2 && !Regex.IsMatch(w, @"^\d{4}$")) // Exclude short words and years
+                    .Take(3) // Take first 3 significant words
+                    .ToArray();
+
+                if (tmdbWords.Length > 0)
+                {
+                    var simplifiedTmdbTerm = string.Join(" ", tmdbWords);
+                    _logger?.Debug($"Using simplified TMDB search term: '{simplifiedTmdbTerm}'");
+                    var tmdbUrl = $"{_siteLink}wp-json/wpreact/v1/search" +
+                                  $"?query={WebUtility.UrlEncode(simplifiedTmdbTerm)}" +
+                                  $"&posts_per_page={PostsPerPage}" +
+                                  $"&page={Page}";
+                    chain.Add(new[] { new IndexerRequest(tmdbUrl) });
+                }
             }
 
             return chain;
+        }
+
+        private static List<string> GetProgressiveFallbackTerms(string searchTerm)
+        {
+            var terms = new List<string>();
+            if (string.IsNullOrWhiteSpace(searchTerm))
+            {
+                return terms;
+            }
+
+            var words = Regex.Matches(searchTerm, @"\b[\w']+\b")
+                .Cast<Match>()
+                .Select(m => m.Value)
+                .ToArray();
+
+            if (words.Length == 0)
+            {
+                return terms;
+            }
+
+            // Strategy 1: full term
+            terms.Add(searchTerm);
+
+            // Strategy 2: first 2 significant words
+            var significantWords = words.Where(w => w.Length > 3).ToList();
+            if (significantWords.Count >= 2)
+            {
+                terms.Add(string.Join(" ", significantWords.Take(2)));
+            }
+            else if (words.Length >= 2)
+            {
+                terms.Add(string.Join(" ", words.Take(2)));
+            }
+
+            // Strategy 3: first significant word
+            if (significantWords.Count >= 1)
+            {
+                terms.Add(significantWords[0]);
+            }
+            else if (words.Length >= 1 && words[0].Length >= 3)
+            {
+                terms.Add(words[0]);
+            }
+
+            return terms.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         }
 
         private async Task<string> GetSpanishTitleFromTmdbAsync(string englishTitle, int? year)
@@ -288,6 +351,8 @@ namespace Jackett.Common.Indexers.Definitions
             if (results == null)
                 results = new JArray();
 
+            _logger?.Debug($"PelisPanda: API returned {results.Count} results");
+
             // Get normalized search term for filtering
             var searchTerm = _currentQuery?.SearchTerm?.Trim();
             if (!string.IsNullOrWhiteSpace(searchTerm))
@@ -313,6 +378,8 @@ namespace Jackett.Common.Indexers.Definitions
                 items.Add((items.Count, raw, detailUrl, type));
             }
 
+            _logger?.Debug($"PelisPanda: Processing {items.Count} items after filtering");
+
             // Sort results to prioritize exact title matches
             if (!string.IsNullOrWhiteSpace(normalizedSearchTerm))
             {
@@ -323,6 +390,8 @@ namespace Jackett.Common.Indexers.Definitions
 
             var details = FetchDetailsAsync(items.Select(i => i.DetailUrl).Distinct().ToList())
                 .GetAwaiter().GetResult();
+
+            _logger?.Debug($"PelisPanda: Fetched details for {details.Count} items");
 
             var seenGuids = new HashSet<string>();
             var releases = new List<ReleaseInfo>();
@@ -339,7 +408,17 @@ namespace Jackett.Common.Indexers.Definitions
                     foundExactMatch = IsExactTitleMatch(normalizedSearchTerm, entry.Item);
                 }
 
+                var beforeCount = releases.Count;
                 BuildReleasesForItem(entry.Item, entry.Type, detail, seenGuids, releases, _currentQuery);
+                var addedCount = releases.Count - beforeCount;
+                if (addedCount > 0)
+                {
+                    _logger?.Debug($"PelisPanda: Added {addedCount} releases from '{(string)entry.Item["title"]}'");
+                }
+                else
+                {
+                    _logger?.Debug($"PelisPanda: No releases added from '{(string)entry.Item["title"]}' (no downloads or filtered out)");
+                }
 
                 // Early exit if we found exact match and have results for episode searches
                 if (foundExactMatch && releases.Count > 0 &&
@@ -361,7 +440,58 @@ namespace Jackett.Common.Indexers.Definitions
 
             var normalizedTitle = ((string)item["title"])?.Trim().ToLowerInvariant() ?? string.Empty;
             var normalizedOriginalTitle = ((string)item["original_title"])?.Trim().ToLowerInvariant() ?? string.Empty;
-            return normalizedTitle == normalizedSearch || normalizedOriginalTitle == normalizedSearch;
+
+            // First try exact match
+            if (normalizedTitle == normalizedSearch || normalizedOriginalTitle == normalizedSearch)
+                return true;
+
+            // Fuzzy match: normalize by removing punctuation and extra spaces
+            var cleanSearch = Regex.Replace(normalizedSearch, @"[^\w\s]", " ");
+            cleanSearch = Regex.Replace(cleanSearch, @"\s+", " ").Trim();
+
+            var cleanTitle = Regex.Replace(normalizedTitle, @"[^\w\s]", " ");
+            cleanTitle = Regex.Replace(cleanTitle, @"\s+", " ").Trim();
+
+            var cleanOriginalTitle = Regex.Replace(normalizedOriginalTitle, @"[^\w\s]", " ");
+            cleanOriginalTitle = Regex.Replace(cleanOriginalTitle, @"\s+", " ").Trim();
+
+            // Check if cleaned versions match
+            if (cleanTitle == cleanSearch || cleanOriginalTitle == cleanSearch)
+                return true;
+
+            // Check if search words are contained in title (for partial matches)
+            var searchWords = cleanSearch.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (searchWords.Length >= 1)
+            {
+                var titleWords = new HashSet<string>(cleanTitle.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
+                var originalTitleWords = new HashSet<string>(cleanOriginalTitle.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
+
+                // Filter out common stop words
+                var stopWords = new HashSet<string> { "el", "la", "los", "las", "de", "del", "y", "e", "o", "un", "una", "the", "a", "an", "and", "or", "of" };
+                var meaningfulSearchWords = searchWords.Where(w => !stopWords.Contains(w) && w.Length > 2).ToArray();
+
+                if (meaningfulSearchWords.Length > 0)
+                {
+                    var titleMatches = meaningfulSearchWords.Count(w => titleWords.Contains(w));
+                    var originalTitleMatches = meaningfulSearchWords.Count(w => originalTitleWords.Contains(w));
+
+                    // Use 40% threshold but require at least 2 matching words for multi-word searches
+                    // This helps match TMDB translations like "Avatar: Aang, El último Maestro Aire"
+                    // with either "Avatar: La leyenda de Aang" (Spanish) or "Avatar: The Last Airbender" (original)
+                    var matchThreshold = Math.Max(1, (int)Math.Ceiling(meaningfulSearchWords.Length * 0.4));
+
+                    // For searches with 3+ words, require at least 2 matches to avoid false positives
+                    if (meaningfulSearchWords.Length >= 3)
+                    {
+                        matchThreshold = Math.Max(2, matchThreshold);
+                    }
+
+                    if (titleMatches >= matchThreshold || originalTitleMatches >= matchThreshold)
+                        return true;
+                }
+            }
+
+            return false;
         }
 
         private string BuildDetailUrl(string type, string slug)
