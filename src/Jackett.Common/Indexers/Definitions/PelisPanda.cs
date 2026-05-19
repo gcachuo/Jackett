@@ -322,9 +322,16 @@ namespace Jackett.Common.Indexers.Definitions
                 (string)item["title"],
                 slug);
 
-            var year = item["year"]?.Type == JTokenType.Integer
-                ? (int?)item["year"]
-                : null;
+            int? year = null;
+            if (item["year"]?.Type == JTokenType.Integer)
+            {
+                year = (int?)item["year"];
+            }
+            else if (item["year"]?.Type == JTokenType.String &&
+                     int.TryParse((string)item["year"], out var parsedYear))
+            {
+                year = parsedYear;
+            }
 
             var category = MapCategory(type);
             var detailsUri = new Uri($"{_siteLink}{type}/{slug}");
@@ -386,6 +393,7 @@ namespace Jackett.Common.Indexers.Definitions
                     Link = linkUri,
                     Guid = guidUri,
                     Details = detailsUri,
+                    Year = year ?? DateTime.Now.Year,
                     PublishDate = ResolvePublishDate(dateStr, year),
                     Seeders = 1,
                     DownloadVolumeFactor = 0,
@@ -410,16 +418,41 @@ namespace Jackett.Common.Indexers.Definitions
             int? season, int? episode)
         {
             var parts = new List<string> { titleBase };
+            if (year.HasValue && year.Value > 0)
+            {
+                parts.Add($"({year.Value})");
+            }
+
             if (season.HasValue && episode.HasValue)
+            {
                 parts.Add($"S{season.Value:00}E{episode.Value:00}");
-            if (year is int y && y > 0)
-                parts.Add($"({y})");
-            if (!string.IsNullOrWhiteSpace(quality))
-                parts.Add(quality);
-            if (!string.IsNullOrWhiteSpace(language))
-                parts.Add(language);
-            return System.Text.RegularExpressions.Regex.Replace(
-                string.Join(" ", parts.Where(p => !string.IsNullOrWhiteSpace(p))), @"\s+", " ").Trim();
+            }
+
+            var formattedQuality = !string.IsNullOrWhiteSpace(quality) ? quality : "";
+            
+            var formattedLanguage = !string.IsNullOrWhiteSpace(language) 
+                ? Regex.Replace(
+                    language.Replace("/", "."),
+                    @"\bInglés\b|\bCastellano\b",
+                    m => m.Value switch
+                    {
+                        "Inglés" => "English",
+                        "Castellano" => "Spanish",
+                        _ => m.Value
+                    })
+                : "";
+            
+            if (!string.IsNullOrWhiteSpace(formattedQuality))
+            {
+                parts.Add(formattedQuality);
+            }
+
+            if (!string.IsNullOrWhiteSpace(formattedLanguage))
+            {
+                parts.Add(formattedLanguage);
+            }
+
+            return $"{string.Join(".", parts.Where(p => !string.IsNullOrWhiteSpace(p)))}-PelisPanda";
         }
 
         internal static long ResolveSize(string sizeStr, string quality)
