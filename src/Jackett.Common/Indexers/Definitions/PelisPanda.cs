@@ -130,25 +130,11 @@ namespace Jackett.Common.Indexers.Definitions
                 var yearInfo = searchYear.HasValue ? $" ({searchYear.Value})" : "";
                 _logger?.Info($"TMDB translated '{term}'{yearInfo} to '{tmdbTranslated}'");
 
-                // Extract first 2-3 significant words from TMDB translation for better API matching
-                // This helps avoid overly specific searches that return no results
-                var tmdbWords = Regex.Matches(tmdbTranslated, @"\b[\w']+\b")
-                    .Cast<Match>()
-                    .Select(m => m.Value)
-                    .Where(w => w.Length > 2 && !Regex.IsMatch(w, @"^\d{4}$")) // Exclude short words and years
-                    .Take(3) // Take first 3 significant words
-                    .ToArray();
-
-                if (tmdbWords.Length > 0)
-                {
-                    var simplifiedTmdbTerm = string.Join(" ", tmdbWords);
-                    _logger?.Debug($"Using simplified TMDB search term: '{simplifiedTmdbTerm}'");
-                    var tmdbUrl = $"{_siteLink}wp-json/wpreact/v1/search" +
-                                  $"?query={WebUtility.UrlEncode(simplifiedTmdbTerm)}" +
-                                  $"&posts_per_page={PostsPerPage}" +
-                                  $"&page={Page}";
-                    chain.Add(new[] { new IndexerRequest(tmdbUrl) });
-                }
+                var tmdbUrl = $"{_siteLink}wp-json/wpreact/v1/search" +
+                              $"?query={WebUtility.UrlEncode(tmdbTranslated)}" +
+                              $"&posts_per_page={PostsPerPage}" +
+                              $"&page={Page}";
+                chain.Add(new[] { new IndexerRequest(tmdbUrl) });
             }
 
             return chain;
@@ -351,8 +337,6 @@ namespace Jackett.Common.Indexers.Definitions
             if (results == null)
                 results = new JArray();
 
-            _logger?.Debug($"PelisPanda: API returned {results.Count} results");
-
             // Get normalized search term for filtering
             var searchTerm = _currentQuery?.SearchTerm?.Trim();
             if (!string.IsNullOrWhiteSpace(searchTerm))
@@ -378,8 +362,6 @@ namespace Jackett.Common.Indexers.Definitions
                 items.Add((items.Count, raw, detailUrl, type));
             }
 
-            _logger?.Debug($"PelisPanda: Processing {items.Count} items after filtering");
-
             // Sort results to prioritize exact title matches
             if (!string.IsNullOrWhiteSpace(normalizedSearchTerm))
             {
@@ -390,8 +372,6 @@ namespace Jackett.Common.Indexers.Definitions
 
             var details = FetchDetailsAsync(items.Select(i => i.DetailUrl).Distinct().ToList())
                 .GetAwaiter().GetResult();
-
-            _logger?.Debug($"PelisPanda: Fetched details for {details.Count} items");
 
             var seenGuids = new HashSet<string>();
             var releases = new List<ReleaseInfo>();
@@ -408,17 +388,7 @@ namespace Jackett.Common.Indexers.Definitions
                     foundExactMatch = IsExactTitleMatch(normalizedSearchTerm, entry.Item);
                 }
 
-                var beforeCount = releases.Count;
                 BuildReleasesForItem(entry.Item, entry.Type, detail, seenGuids, releases, _currentQuery);
-                var addedCount = releases.Count - beforeCount;
-                if (addedCount > 0)
-                {
-                    _logger?.Debug($"PelisPanda: Added {addedCount} releases from '{(string)entry.Item["title"]}'");
-                }
-                else
-                {
-                    _logger?.Debug($"PelisPanda: No releases added from '{(string)entry.Item["title"]}' (no downloads or filtered out)");
-                }
 
                 // Early exit if we found exact match and have results for episode searches
                 if (foundExactMatch && releases.Count > 0 &&
