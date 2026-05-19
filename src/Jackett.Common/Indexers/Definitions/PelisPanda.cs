@@ -112,7 +112,8 @@ namespace Jackett.Common.Indexers.Definitions
             var tmdbTranslated = GetSpanishTitleFromTmdbAsync(term, searchYear).GetAwaiter().GetResult();
             if (!string.IsNullOrWhiteSpace(tmdbTranslated) && !tmdbTranslated.Equals(term, StringComparison.OrdinalIgnoreCase))
             {
-                _logger?.Info($"TMDB translated '{term}' to '{tmdbTranslated}'");
+                var yearInfo = searchYear.HasValue ? $" ({searchYear.Value})" : "";
+                _logger?.Info($"TMDB translated '{term}'{yearInfo} to '{tmdbTranslated}'");
                 var tmdbUrl = $"{_siteLink}wp-json/wpreact/v1/search" +
                               $"?query={WebUtility.UrlEncode(tmdbTranslated)}" +
                               $"&posts_per_page={PostsPerPage}" +
@@ -136,6 +137,8 @@ namespace Jackett.Common.Indexers.Definitions
                 if (year.HasValue)
                     movieUrl += $"&year={year.Value}";
 
+                _logger?.Debug($"TMDB movie search: query='{englishTitle}', year={year?.ToString() ?? "null"}");
+                
                 var movieRequest = new WebRequest(movieUrl);
                 var movieResponse = await _webclient.GetResultAsync(movieRequest).ConfigureAwait(false);
                 
