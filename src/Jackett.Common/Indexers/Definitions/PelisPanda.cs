@@ -3,10 +3,14 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Net;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Jackett.Common.Indexers.Definitions.Abstract;
 using Jackett.Common.Models;
+using Jackett.Common.Models.IndexerConfig;
 using Jackett.Common.Services.Interfaces;
 using Jackett.Common.Utils;
 using Newtonsoft.Json.Linq;
@@ -26,10 +30,15 @@ namespace Jackett.Common.Indexers.Definitions
                           IProtectionService ps, ICacheService cs)
             : base(configService, wc, l, ps, cs)
         {
+            var tmdbApiKey = new ConfigurationData.StringConfigurationItem("TMDB API Key (optional, for better English title matching)")
+            {
+                Value = ""
+            };
+            configData.AddDynamic("TmdbApiKey", tmdbApiKey);
         }
 
         public override IIndexerRequestGenerator GetRequestGenerator() =>
-            new PelisPandaRequestGenerator(SiteLink);
+            new PelisPandaRequestGenerator(SiteLink, configData, webclient, logger);
 
         public override IParseIndexerResponse GetParser() =>
             new PelisPandaParser(webclient, logger, SiteLink);
@@ -41,10 +50,16 @@ namespace Jackett.Common.Indexers.Definitions
         private const int Page = 1;
 
         private readonly string _siteLink;
+        private readonly ConfigurationData _configData;
+        private readonly WebClient _webclient;
+        private readonly Logger _logger;
 
-        public PelisPandaRequestGenerator(string siteLink)
+        public PelisPandaRequestGenerator(string siteLink, ConfigurationData configData, WebClient webclient, Logger logger)
         {
             _siteLink = siteLink;
+            _configData = configData;
+            _webclient = webclient;
+            _logger = logger;
         }
 
         public IndexerPageableRequestChain GetSearchRequests(TorznabQuery query)
@@ -55,17 +70,92 @@ namespace Jackett.Common.Indexers.Definitions
             if (string.IsNullOrWhiteSpace(term))
                 return chain;
 
+            // Extract year from search term
+            int? searchYear = null;
+            var yearMatch = Regex.Match(term, @"\b(19\d{2}|20\d{2})\b");
+            if (yearMatch.Success)
+            {
+                searchYear = int.Parse(yearMatch.Value);
+                term = term.Replace(yearMatch.Value, "").Trim();
+            }
+
             if (query.Season is { } season)
                 term = $"{term} {season}".Trim();
             if (!string.IsNullOrWhiteSpace(query.Episode))
                 term = $"{term} {query.Episode}".Trim();
 
+            // Try original term first
             var url = $"{_siteLink}wp-json/wpreact/v1/search" +
                       $"?query={WebUtility.UrlEncode(term)}" +
                       $"&posts_per_page={PostsPerPage}" +
                       $"&page={Page}";
             chain.Add(new[] { new IndexerRequest(url) });
+
+            // Try TMDB translation as fallback
+            var tmdbTranslated = GetSpanishTitleFromTmdbAsync(term, searchYear).GetAwaiter().GetResult();
+            if (!string.IsNullOrWhiteSpace(tmdbTranslated) && !tmdbTranslated.Equals(term, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger?.Info($"TMDB translated '{term}' to '{tmdbTranslated}'");
+                var tmdbUrl = $"{_siteLink}wp-json/wpreact/v1/search" +
+                              $"?query={WebUtility.UrlEncode(tmdbTranslated)}" +
+                              $"&posts_per_page={PostsPerPage}" +
+                              $"&page={Page}";
+                chain.Add(new[] { new IndexerRequest(tmdbUrl) });
+            }
+
             return chain;
+        }
+
+        private async Task<string> GetSpanishTitleFromTmdbAsync(string englishTitle, int? year)
+        {
+            var tmdbApiKey = ((ConfigurationData.StringConfigurationItem)_configData.GetDynamic("TmdbApiKey"))?.Value;
+            if (string.IsNullOrWhiteSpace(tmdbApiKey))
+                return null;
+
+            try
+            {
+                var searchUrl = $"https://api.themoviedb.org/3/search/multi?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
+                if (year.HasValue)
+                    searchUrl += $"&year={year.Value}";
+
+                var request = new WebRequest(searchUrl);
+                var response = await _webclient.GetResultAsync(request).ConfigureAwait(false);
+                
+                if (response.Status != HttpStatusCode.OK)
+                    return null;
+
+                var json = JsonSerializer.Deserialize<TmdbSearchResponse>(response.ContentString);
+                if (json?.Results == null || json.Results.Count == 0)
+                    return null;
+
+                // Filter by year and prefer movies/TV shows
+                TmdbResult matchingResult = null;
+                if (year.HasValue)
+                {
+                    matchingResult = json.Results.FirstOrDefault(r =>
+                    {
+                        var releaseYear = r.ReleaseDate?.Substring(0, 4);
+                        var firstAirYear = r.FirstAirDate?.Substring(0, 4);
+                        var matchesYear = (releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value) ||
+                                         (firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value);
+                        var isMovieOrTv = r.MediaType == "movie" || r.MediaType == "tv";
+                        return matchesYear && isMovieOrTv;
+                    });
+                }
+
+                // If no year match, prefer first movie or TV result
+                if (matchingResult == null)
+                    matchingResult = json.Results.FirstOrDefault(r => r.MediaType == "movie" || r.MediaType == "tv");
+
+                // Fallback to first result
+                var result = matchingResult ?? json.Results[0];
+                return result.Title ?? result.Name;
+            }
+            catch (Exception ex)
+            {
+                _logger?.Error($"Error fetching TMDB data: {ex.Message}");
+                return null;
+            }
         }
     }
 
@@ -324,5 +414,29 @@ namespace Jackett.Common.Indexers.Definitions
 
             return DateTime.Today;
         }
+    }
+
+    public class TmdbSearchResponse
+    {
+        [JsonPropertyName("results")]
+        public List<TmdbResult> Results { get; set; }
+    }
+
+    public class TmdbResult
+    {
+        [JsonPropertyName("title")]
+        public string Title { get; set; }
+
+        [JsonPropertyName("name")]
+        public string Name { get; set; }
+
+        [JsonPropertyName("release_date")]
+        public string ReleaseDate { get; set; }
+
+        [JsonPropertyName("first_air_date")]
+        public string FirstAirDate { get; set; }
+
+        [JsonPropertyName("media_type")]
+        public string MediaType { get; set; }
     }
 }
