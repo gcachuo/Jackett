@@ -292,7 +292,7 @@ namespace Jackett.Common.Indexers.Definitions
                     if (!pageReleases.Any() && !tmdbTranslationAttempted)
                     {
                         tmdbTranslationAttempted = true;
-                        
+
                         // Use original query term (before truncation) for TMDB search
                         var originalTerm = query.GetQueryString()?.Trim();
                         if (!string.IsNullOrWhiteSpace(originalTerm))
@@ -305,7 +305,7 @@ namespace Jackett.Common.Indexers.Definitions
                                 originalTerm = originalTerm.Replace(searchYear.Value.ToString(), "").Trim();
                             }
                         }
-                        
+
                         var tmdbTranslation = await GetSpanishTitleFromTmdb(originalTerm ?? rawSearchTerm, searchYear, postType);
                         tmdbTranslatedTitle = tmdbTranslation?.Title;
                         tmdbMatchedYear = tmdbTranslation?.Year;
@@ -357,7 +357,7 @@ namespace Jackett.Common.Indexers.Definitions
                         releases.Add(release);
                     }
                 }
-                
+
                 // Early exit if we have enough results for specific episode searches
                 var hasEpisodeRequest = !string.IsNullOrWhiteSpace(queryForFilters?.Episode);
                 if (hasEpisodeRequest && releases.Count >= 10)
@@ -427,7 +427,7 @@ namespace Jackett.Common.Indexers.Definitions
                         // skip if it doesn't match either title
                         continue;
                     }
-                    
+
                     // Check for exact match (case-insensitive, normalized)
                     var normalizedSearch = originalSearchTerm.Trim().ToLowerInvariant();
                     if (IsExactTitleMatch(normalizedSearch, post))
@@ -516,14 +516,14 @@ namespace Jackett.Common.Indexers.Definitions
                         logger.Debug($"Early exit: Found exact title match with {releases.Count} releases");
                         break;
                     }
-                    
+
                     // Stop if we've found enough releases for episode-specific requests
                     if (hasEpisodeRequest && releases.Count >= minReleasesForEarlyExit)
                     {
                         logger.Debug($"Early exit: Found {releases.Count} releases for specific episode search");
                         break;
                     }
-                    
+
                     // Stop if we've processed enough shows without finding matches (episode-specific only)
                     if (hasEpisodeRequest && showsProcessed >= maxShowsToProcess && releases.Count == 0)
                     {
@@ -558,7 +558,7 @@ namespace Jackett.Common.Indexers.Definitions
             try
             {
                 var isTvSearch = postType == "tvshows" || postType == "animes";
-                
+
                 // Use specific endpoints that support year filtering
                 string searchUrl;
                 if (isTvSearch)
@@ -606,7 +606,7 @@ namespace Jackett.Common.Indexers.Definitions
                             return releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value;
                         }
                     });
-                    
+
                     // If year specified but no match found, return null instead of wrong result
                     if (result == null)
                     {
@@ -622,7 +622,7 @@ namespace Jackett.Common.Indexers.Definitions
 
                 var spanishTitle = result.Title ?? result.Name;
                 var tmdbYear = ExtractTmdbResultYear(result);
-                
+
                 CacheTmdbTranslation(cacheKey, spanishTitle, tmdbYear);
                 return new TmdbTranslationResult { Title = spanishTitle, Year = tmdbYear };
             }
@@ -739,11 +739,11 @@ namespace Jackett.Common.Indexers.Definitions
             // this code split the words, remove words with 2 letters or less, remove accents and lowercase
             var queryMatches = Regex.Matches(queryStr, @"\b[\w']*\b");
             var queryWords = from m in queryMatches.Cast<Match>()
-                             where !string.IsNullOrEmpty(m.Value) && m.Value.Length > 2
+                             where !string.IsNullOrEmpty(m.Value) && (m.Value.Length > 2 || char.IsDigit(m.Value[0]))
                              select Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower()));
             var titleMatches = Regex.Matches(title, @"\b[\w']*\b");
             var titleWords = from m in titleMatches.Cast<Match>()
-                             where !string.IsNullOrEmpty(m.Value) && m.Value.Length > 2
+                             where !string.IsNullOrEmpty(m.Value) && (m.Value.Length > 2 || char.IsDigit(m.Value[0]))
                              select Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower()));
             titleWords = titleWords.ToArray();
 
@@ -753,8 +753,14 @@ namespace Jackett.Common.Indexers.Definitions
             // Require at least 2 matching words to avoid false positives
             var originalWords = Regex.Matches(originalQuery, @"\b[\w']+\b").Cast<Match>()
                 .Select(m => Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower())))
-                .Where(w => w.Length > 2 && !Regex.IsMatch(w, @"^\d{4}$")) // Exclude years (4-digit numbers)
+                .Where(w => (w.Length > 2 || char.IsDigit(w[0])) && !Regex.IsMatch(w, @"^\d{4}$")) // Exclude years (4-digit numbers)
                 .ToList();
+
+            var requiredDigits = originalWords.Where(w => w.All(char.IsDigit)).ToList();
+            if (requiredDigits.Count > 0 && requiredDigits.Any(digit => !titleWords.Contains(digit)))
+            {
+                return false;
+            }
 
             var originalWordCount = originalWords.Count;
 
@@ -814,7 +820,7 @@ namespace Jackett.Common.Indexers.Definitions
             var requestedEpisode = !string.IsNullOrWhiteSpace(query?.Episode) ? ParseUtil.CoerceInt(query.Episode) : 0;
             var hasEpisodeRequest = requestedEpisode > 0;
             var hasSeasonRequest = requestedSeason > 0;
-            
+
             if (isLatest)
             {
                 var maxEpisodesSetting = ((ConfigurationData.StringConfigurationItem)configData.GetDynamic("MaxEpisodesPerSeries")).Value;
@@ -845,7 +851,7 @@ namespace Jackett.Common.Indexers.Definitions
                 .Distinct()
                 .OrderByDescending(s => s)
                 .ToList();
-            
+
             // If specific season requested, only fetch that season
             if (hasSeasonRequest)
             {
@@ -878,14 +884,14 @@ namespace Jackett.Common.Indexers.Definitions
                     {
                         break;
                     }
-                    
+
                     var pageResponse = await GetEpisodesResponse(postId, seasonNumber: season, maxEpisodes: perPage, page: page);
                     var pagePosts = pageResponse?.Data?.Posts;
                     if (pagePosts == null || pagePosts.Count == 0)
                     {
                         continue;
                     }
-                    
+
                     // Filter by specific episode if requested
                     if (requestedEpisode > 0)
                     {
@@ -936,7 +942,7 @@ namespace Jackett.Common.Indexers.Definitions
                             {
                                 break;
                             }
-                            
+
                             if (seenEpisodeIds.Add(episode.Id))
                             {
                                 allEpisodes.Add(episode);

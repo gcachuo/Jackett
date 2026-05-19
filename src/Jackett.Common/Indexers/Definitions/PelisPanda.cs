@@ -442,6 +442,12 @@ namespace Jackett.Common.Indexers.Definitions
                 .Where(w => (w.Length > 2 || char.IsDigit(w[0])) && !Regex.IsMatch(w, @"^\d{4}$")) // Exclude years (4-digit numbers)
                 .ToList();
 
+            var requiredDigits = originalWords.Where(w => w.All(char.IsDigit)).ToList();
+            if (requiredDigits.Count > 0 && requiredDigits.Any(digit => !titleWords.Contains(digit)))
+            {
+                return false;
+            }
+
             var originalWordCount = originalWords.Count;
 
             if (queryWordsList.Count < originalWordCount)
