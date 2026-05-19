@@ -16,7 +16,9 @@ namespace Jackett.Test.Common.Indexers.PelisPanda
         [Test]
         public void RequestGenerator_EmptyQuery_ReturnsEmptyChain()
         {
-            var generator = new PelisPandaRequestGenerator(SiteLink);
+            var configData = new Jackett.Common.Models.IndexerConfig.ConfigurationData();
+            var parser = new PelisPandaParser(new Jackett.Test.TestHelpers.TestWebClient(), null, SiteLink);
+            var generator = new PelisPandaRequestGenerator(SiteLink, configData, new Jackett.Test.TestHelpers.TestWebClient(), null, parser);
             var chain = generator.GetSearchRequests(new TorznabQuery { SearchTerm = "" });
             Assert.That(chain.GetAllTiers().SelectMany(t => t).Count(), Is.EqualTo(0));
         }
@@ -24,7 +26,9 @@ namespace Jackett.Test.Common.Indexers.PelisPanda
         [Test]
         public void RequestGenerator_TermWithSeason_BuildsExpectedUrl()
         {
-            var generator = new PelisPandaRequestGenerator(SiteLink);
+            var configData = new Jackett.Common.Models.IndexerConfig.ConfigurationData();
+            var parser = new PelisPandaParser(new Jackett.Test.TestHelpers.TestWebClient(), null, SiteLink);
+            var generator = new PelisPandaRequestGenerator(SiteLink, configData, new Jackett.Test.TestHelpers.TestWebClient(), null, parser);
             var chain = generator.GetSearchRequests(new TorznabQuery
             {
                 SearchTerm = "stranger things",
@@ -35,7 +39,8 @@ namespace Jackett.Test.Common.Indexers.PelisPanda
             Assert.That(requests.Count, Is.EqualTo(1), "Expect exactly one IndexerRequest in the chain");
             var url = requests[0].Url;
             Assert.That(url, Does.StartWith("https://pelispanda.org/wp-json/wpreact/v1/search?query="));
-            Assert.That(url, Does.Contain("stranger+things+4").Or.Contain("stranger%20things%204"));
+            // Episode info should be stripped from the search term now
+            Assert.That(url, Does.Contain("stranger+things").Or.Contain("stranger%20things"));
             Assert.That(url, Does.Contain("posts_per_page=500"));
             Assert.That(url, Does.Contain("page=1"));
         }
@@ -43,7 +48,9 @@ namespace Jackett.Test.Common.Indexers.PelisPanda
         [Test]
         public void RequestGenerator_EmptyTermWithSeason_ReturnsEmptyChain()
         {
-            var generator = new PelisPandaRequestGenerator(SiteLink);
+            var configData = new Jackett.Common.Models.IndexerConfig.ConfigurationData();
+            var parser = new PelisPandaParser(new Jackett.Test.TestHelpers.TestWebClient(), null, SiteLink);
+            var generator = new PelisPandaRequestGenerator(SiteLink, configData, new Jackett.Test.TestHelpers.TestWebClient(), null, parser);
             var chain = generator.GetSearchRequests(new TorznabQuery
             {
                 SearchTerm = "",

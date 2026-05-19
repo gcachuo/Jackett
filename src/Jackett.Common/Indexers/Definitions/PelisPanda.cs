@@ -37,11 +37,15 @@ namespace Jackett.Common.Indexers.Definitions
             configData.AddDynamic("TmdbApiKey", tmdbApiKey);
         }
 
-        public override IIndexerRequestGenerator GetRequestGenerator() =>
-            new PelisPandaRequestGenerator(SiteLink, configData, webclient, logger);
+        private PelisPandaParser _parser;
 
-        public override IParseIndexerResponse GetParser() =>
-            new PelisPandaParser(webclient, logger, SiteLink);
+        public override IIndexerRequestGenerator GetRequestGenerator()
+        {
+            _parser = new PelisPandaParser(webclient, logger, SiteLink);
+            return new PelisPandaRequestGenerator(SiteLink, configData, webclient, logger, _parser);
+        }
+
+        public override IParseIndexerResponse GetParser() => _parser;
     }
 
     public class PelisPandaRequestGenerator : IIndexerRequestGenerator
@@ -53,18 +57,23 @@ namespace Jackett.Common.Indexers.Definitions
         private readonly ConfigurationData _configData;
         private readonly WebClient _webclient;
         private readonly Logger _logger;
+        private readonly PelisPandaParser _parser;
 
-        public PelisPandaRequestGenerator(string siteLink, ConfigurationData configData, WebClient webclient, Logger logger)
+        public PelisPandaRequestGenerator(string siteLink, ConfigurationData configData, WebClient webclient, Logger logger, PelisPandaParser parser)
         {
             _siteLink = siteLink;
             _configData = configData;
             _webclient = webclient;
             _logger = logger;
+            _parser = parser;
         }
 
         public IndexerPageableRequestChain GetSearchRequests(TorznabQuery query)
         {
             var chain = new IndexerPageableRequestChain();
+
+            // Store query in parser for filtering
+            _parser.SetQuery(query);
 
             var term = query.SearchTerm ?? string.Empty;
             if (string.IsNullOrWhiteSpace(term))
@@ -79,10 +88,18 @@ namespace Jackett.Common.Indexers.Definitions
                 term = term.Replace(yearMatch.Value, "").Trim();
             }
 
-            if (query.Season is { } season)
-                term = $"{term} {season}".Trim();
-            if (!string.IsNullOrWhiteSpace(query.Episode))
-                term = $"{term} {query.Episode}".Trim();
+            // Remove episode patterns from search term (e.g., "Show Name S01E01" -> "Show Name")
+            // but keep the episode info in query object for filtering
+            if (!string.IsNullOrWhiteSpace(term))
+            {
+                // Remove patterns like S01E01, s01e01
+                term = Regex.Replace(term, @"\s+[Ss]\d{1,2}[Ee]\d{1,2}$", "").Trim();
+                // Remove patterns like 1x01, 1X01
+                term = Regex.Replace(term, @"\s+\d{1,2}[xX]\d{1,2}$", "").Trim();
+            }
+
+            // Note: We do NOT add season/episode to the search term
+            // The API search is broader, and we filter results in the parser
 
             // Try original term first
             var url = $"{_siteLink}wp-json/wpreact/v1/search" +
@@ -171,12 +188,18 @@ namespace Jackett.Common.Indexers.Definitions
         private readonly WebClient _webclient;
         private readonly Logger _logger;
         private readonly string _siteLink;
+        private TorznabQuery _currentQuery;
 
         public PelisPandaParser(WebClient webclient, Logger logger, string siteLink)
         {
             _webclient = webclient;
             _logger = logger;
             _siteLink = siteLink;
+        }
+
+        public void SetQuery(TorznabQuery query)
+        {
+            _currentQuery = query;
         }
 
         public IList<ReleaseInfo> ParseResponse(IndexerResponse indexerResponse)
@@ -222,7 +245,7 @@ namespace Jackett.Common.Indexers.Definitions
             {
                 if (!details.TryGetValue(entry.DetailUrl, out var detail) || detail == null)
                     continue;
-                BuildReleasesForItem(entry.Item, entry.Type, detail, seenGuids, releases);
+                BuildReleasesForItem(entry.Item, entry.Type, detail, seenGuids, releases, _currentQuery);
             }
             return releases;
         }
@@ -287,7 +310,7 @@ namespace Jackett.Common.Indexers.Definitions
         }
 
         private void BuildReleasesForItem(JObject item, string type,
-            JObject detail, HashSet<string> seenGuids, List<ReleaseInfo> releases)
+            JObject detail, HashSet<string> seenGuids, List<ReleaseInfo> releases, TorznabQuery query)
         {
             var downloads = detail["downloads"] as JArray;
             if (downloads == null || downloads.Count == 0)
@@ -319,6 +342,19 @@ namespace Jackett.Common.Indexers.Definitions
                 var dateStr = (string)dl["date"];
                 var season = (int?)dl["season"];
                 var episode = (int?)dl["episode"];
+
+                // Filter by episode if specified in query
+                if (query != null && (query.Season > 0 || !string.IsNullOrWhiteSpace(query.Episode)))
+                {
+                    // If query has season/episode requirements, check if this download matches
+                    var seasonMatch = query.Season == 0 || (season.HasValue && query.Season == season.Value);
+                    var episodeMatch = string.IsNullOrWhiteSpace(query.Episode) || 
+                                      (episode.HasValue && query.Episode == episode.Value.ToString());
+                    
+                    if (!seasonMatch || !episodeMatch)
+                        continue; // Skip this download if it doesn't match the requested episode
+                }
+
 
                 Uri magnetUri = null;
                 Uri linkUri = null;
