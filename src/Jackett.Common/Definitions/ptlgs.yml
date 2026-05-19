@@ -1,33 +1,29 @@
 ---
-id: hdclone
-name: HDClone
-description: "HDClone is a CHINESE Private Torrent Tracker for MOVIES / TV / GENERAL"
+id: ptlgs
+name: PTLGS
+description: "PTLGS is a CHINESE Private Torrent Tracker for MOVIES / TV"
 language: zh-CN
 type: private
 encoding: UTF-8
 links:
-  - https://pt.hdclone.top/
-legacylinks:
-  - https://pt.hdclone.org/
+  - https://ptlgs.org/
 
 caps:
   categorymappings:
-    - {id: 401, cat: Movies, desc: "Movies/电影"}
-    - {id: 402, cat: TV, desc: "TV Series/电视剧"}
-    - {id: 404, cat: TV/Documentary, desc: "Documentaries/纪录片"}
-    - {id: 403, cat: TV, desc: "TV Shows/综艺"}
-    - {id: 405, cat: TV/Anime, desc: "Animations/动漫、动画"}
-    - {id: 409, cat: Audio/Video, desc: "Playlet/短剧"}
-    - {id: 410, cat: Audio/Video, desc: "MV/演唱会"}
-    - {id: 408, cat: Audio, desc: "Music/音乐"}
-    - {id: 407, cat: Other, desc: "Others/其他（慎选）"}
+    - {id: 409, cat: Other/Misc, desc: "其他(Other)"}
+    - {id: 407, cat: TV/Sport, desc: "体育(Sports)"}
+    - {id: 406, cat: Audio/Video, desc: "音乐(Music Video)"}
+    - {id: 403, cat: TV, desc: "综艺(Variety Shows)"}
+    - {id: 402, cat: TV, desc: "剧集(Drama Serie)"}
+    - {id: 405, cat: TV/Anime, desc: "动漫/Anime)"}
+    - {id: 404, cat: TV/Documentary, desc: "纪录片/Documentary)"}
+    - {id: 401, cat: Movies, desc: "电影(Movies)"}
+    - {id: 411, cat: Other, desc: "字幕组(Subtitle Group)"}
 
   modes:
     search: [q]
-    tv-search: [q, season, ep, imdbid]
-    movie-search: [q, imdbid]
-    music-search: [q]
-    book-search: [q]
+    tv-search: [q, season, ep, imdbid, doubanid]
+    movie-search: [q, imdbid, doubanid]
 
 settings:
   - name: username
@@ -42,7 +38,7 @@ settings:
   - name: info_2fa
     type: info
     label: "About 2FA code"
-    default: "Only fill in the <b>2FA code</b> box if you have enabled <b>2FA</b> on the HDClone Web Site. Otherwise just leave it empty."
+    default: "Only fill in the <b>2FA code</b> box if you have enabled <b>2FA</b> on the PTLGS Web Site. Otherwise just leave it empty."
   - name: freeleech
     type: checkbox
     label: Search freeleech only
@@ -70,7 +66,7 @@ settings:
   - name: info_activity
     type: info
     label: Account Inactivity
-    default: "Account retention rules:<ol><li>Veteran User and above will be retained forever</li><li>Elite User and above will not have their account deleted after parking (in the control panel)</li><li> Users with a parked account will be deleted if they do not log in for 80 consecutive days</li><li>Users with a non-parked account will be deleted if they do not log in for 60 consecutive days</li><li>Users who have no traffic (i.e. upload/download data are both 0) will be deleted if they do not log in for 10 consecutive days.</li></ol>"
+    default: "Account retention rules:<ol><li>All users' accounts will be retained forever, and data will be retained forever</li><li>Newly registered accounts without traffic (i.e., upload/download data are 0) will be automatically frozen by the system if they do not log in for 7 consecutive days</li><li>Accounts that have been inactive for more than 30 days will be automatically banned by the system</li><li>determination method: When there is an unread announcement, it is necessary to manually confirm that the announcement has been read to be considered active; When there are no unread announcements, you need to visit the homepage to be active.</li></ol>"
 
 login:
   path: login.php
@@ -91,8 +87,6 @@ login:
     trackerssl: yes
   error:
     - selector: td.embedded:has(h2:contains("失败"))
-      message:
-        selector: td.text
   test:
     path: index.php
     selector: a[href="logout.php"]
@@ -116,27 +110,27 @@ search:
     notnewword: 1
 
   rows:
-    selector: table.torrents > tbody > tr:has(table.torrentname)
+    selector: table.torrents > tbody > tr:has(a[href*="download.php?id="])
 
   fields:
     category:
-      selector: a[href^="?cat="]
+      selector: a[href*="?cat="]
       attribute: href
       filters:
         - name: querystring
           args: cat
     title_default:
-      selector: a[href^="details.php?id="]
+      selector: a[href*="details.php?id="]
     title:
-      selector: a[title][href^="details.php?id="]
+      selector: a[title][href*="details.php?id="]
       attribute: title
       optional: true
       default: "{{ .Result.title_default }}"
     details:
-      selector: a[href^="details.php?id="]
+      selector: a[href*="details.php?id="]
       attribute: href
     download:
-      selector: a[href^="download.php?id="]
+      selector: a[href*="download.php?id="]
       attribute: href
     poster:
       selector: img[data-src]
@@ -200,12 +194,10 @@ search:
         img.pro_free2up: 2
         img.pro_2up: 2
         "*": 1
-    minimumratio:
-      text: 1
     minimumseedtime:
-      # 3 days (as seconds = 3 x 24 x 60 x 60)
-      text: 259200
+      # 5 hours (as seconds = 5 x 60 x 60)
+      text: 18000
     description:
-      selector: td:nth-child(2)
+      selector: td.rowfollow:nth-child(2)
       remove: a, b, font, img, span
-# NexusPHP v1.8.11 2024-03-27
+# NexusPHP v1.8.13 2024-09-21

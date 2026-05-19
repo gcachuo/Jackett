@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
@@ -30,6 +31,9 @@ namespace Jackett.Common.Indexers.Definitions
         public override string Type => "public";
 
         private const int ReleasesPerPage = 30;
+        private static readonly TimeSpan TmdbTranslationCacheTtl = TimeSpan.FromHours(12);
+        private static readonly TimeSpan TmdbTranslationNegativeCacheTtl = TimeSpan.FromMinutes(30);
+        private static readonly ConcurrentDictionary<string, TmdbCacheEntry> TmdbTranslationCache = new(StringComparer.OrdinalIgnoreCase);
 
         private readonly Dictionary<string, string> _headers = new()
         {
@@ -76,6 +80,12 @@ namespace Jackett.Common.Indexers.Definitions
             };
             configData.AddDynamic("MaxEpisodesPerSeries", maxEpisodes);
 
+            var tmdbApiKey = new ConfigurationData.StringConfigurationItem("TMDB API Key (optional, for better English title matching)")
+            {
+                Value = ""
+            };
+            configData.AddDynamic("TmdbApiKey", tmdbApiKey);
+
             var apiLink = $"{SiteLink}wp-api/v1/";
             _searchUrl = $"{apiLink}search?filter=%7B%7D&postType={{0}}&postsPerPage={ReleasesPerPage}";
             _latestUrl =
@@ -97,8 +107,87 @@ namespace Jackett.Common.Indexers.Definitions
         {
             var releases = new List<ReleaseInfo>();
             var rawSearchTerm = query.GetQueryString()?.Trim();
-            var searchTerm = WebUtilityHelpers.UrlEncode(rawSearchTerm, Encoding.UTF8);
+            int? searchYear = null;
+            int? parsedSeason = null;
+            string parsedEpisode = null;
+
+            // Extract season/episode from the raw search term when not provided by TorznabQuery
+            if (!string.IsNullOrWhiteSpace(rawSearchTerm) && (query.Season == null || query.Season == 0) && string.IsNullOrWhiteSpace(query.Episode))
+            {
+                var seasonEpisodeMatch = Regex.Match(rawSearchTerm, @"\b[Ss](\d{1,2})[Ee](\d{1,2})\b");
+                if (seasonEpisodeMatch.Success)
+                {
+                    parsedSeason = ParseUtil.CoerceInt(seasonEpisodeMatch.Groups[1].Value);
+                    parsedEpisode = seasonEpisodeMatch.Groups[2].Value;
+                }
+                else
+                {
+                    var seasonEpisodeAltMatch = Regex.Match(rawSearchTerm, @"\b(\d{1,2})[xX](\d{1,2})\b");
+                    if (seasonEpisodeAltMatch.Success)
+                    {
+                        parsedSeason = ParseUtil.CoerceInt(seasonEpisodeAltMatch.Groups[1].Value);
+                        parsedEpisode = seasonEpisodeAltMatch.Groups[2].Value;
+                    }
+                    else
+                    {
+                        var seasonOnlyMatch = Regex.Match(rawSearchTerm, @"\b[Ss](\d{1,2})\b");
+                        if (seasonOnlyMatch.Success)
+                        {
+                            parsedSeason = ParseUtil.CoerceInt(seasonOnlyMatch.Groups[1].Value);
+                        }
+                    }
+                }
+            }
+
+            var queryForFilters = query;
+            if (parsedSeason > 0 || !string.IsNullOrWhiteSpace(parsedEpisode))
+            {
+                queryForFilters = query.Clone();
+                if (parsedSeason > 0)
+                {
+                    queryForFilters.Season = parsedSeason;
+                }
+
+                if (!string.IsNullOrWhiteSpace(parsedEpisode))
+                {
+                    queryForFilters.Episode = parsedEpisode;
+                }
+            }
+
+            // Extract year from search term if present
+            if (!string.IsNullOrWhiteSpace(rawSearchTerm))
+            {
+                var yearMatch = Regex.Match(rawSearchTerm, @"\b(19\d{2}|20\d{2})\b");
+                if (yearMatch.Success)
+                {
+                    searchYear = int.Parse(yearMatch.Value);
+                    // Remove year from search term
+                    rawSearchTerm = rawSearchTerm.Replace(yearMatch.Value, "").Trim();
+                }
+            }
+
+            // Remove episode patterns from search term (e.g., "Show Name S01E01" -> "Show Name")
+            // but keep the episode info in query object for filtering
+            if (!string.IsNullOrWhiteSpace(rawSearchTerm))
+            {
+                // Remove patterns like S01E01, s01e01
+                rawSearchTerm = Regex.Replace(rawSearchTerm, @"\s+[Ss]\d{1,2}[Ee]\d{1,2}$", "").Trim();
+                // Remove patterns like 1x01, 1X01
+                rawSearchTerm = Regex.Replace(rawSearchTerm, @"\s+\d{1,2}[xX]\d{1,2}$", "").Trim();
+                // Remove patterns like S02, s02 (season-only)
+                rawSearchTerm = Regex.Replace(rawSearchTerm, @"\s+[Ss]\d{1,2}$", "").Trim();
+            }
+
+            // Limit search term to 16 characters to match the website's search API behavior for better title matching
+            // The website uses: const Fe = xe.substring(0, 16);
+            if (!string.IsNullOrWhiteSpace(rawSearchTerm) && rawSearchTerm.Length > 16)
+            {
+                rawSearchTerm = rawSearchTerm.Substring(0, 16);
+            }
+
+            var searchTerm = !string.IsNullOrWhiteSpace(rawSearchTerm) ? Uri.EscapeDataString(rawSearchTerm) : string.Empty;
             var isLatest = string.IsNullOrWhiteSpace(rawSearchTerm);
+            var rawSearchTermForFilter = rawSearchTerm;
 
             if (!isLatest && rawSearchTerm.Length < 3)
             {
@@ -144,16 +233,116 @@ namespace Jackett.Common.Indexers.Definitions
                 postTypes.Add("animes");
             }
 
+            // For season/episode searches, restrict to TV/anime content to avoid movie matches.
+            if (queryForFilters.Season > 0 || !string.IsNullOrWhiteSpace(queryForFilters.Episode))
+            {
+                postTypes = postTypes
+                    .Where(postType => postType is "tvshows" or "animes")
+                    .Distinct()
+                    .ToList();
+
+                if (postTypes.Count == 0)
+                {
+                    postTypes.Add("tvshows");
+                    postTypes.Add("animes");
+                }
+            }
+
+            // Cache TMDB translation to avoid duplicate API calls
+            string tmdbTranslatedTitle = null;
+            int? tmdbMatchedYear = null;
+            var tmdbTranslationAttempted = false;
+
             var seenGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var postType in postTypes)
             {
-                var searchUrl = string.Format(_searchUrl, postType) + $"&q={searchTerm}";
-                var latestUrl = string.Format(_latestUrl, postType);
-                var releasesUrl = !isLatest ? searchUrl : latestUrl;
-                var response = await RequestWithCookiesAndRetryAsync(
-                    releasesUrl, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
-                    headers: _headers);
-                var pageReleases = await ParseReleasesAsync(response, query, isLatest);
+                List<ReleaseInfo> pageReleases = new List<ReleaseInfo>();
+
+                if (!isLatest)
+                {
+                    // Progressive fallback strategy for Spanish title matching:
+                    // 1. Try full search term
+                    // 2. If no results, try first 2 words
+                    // 3. If still no results, try first word only
+                    // This allows matching English titles against Spanish content using original_title field
+                    var searchTerms = GetProgressiveFallbackTerms(rawSearchTerm);
+
+                    foreach (var term in searchTerms)
+                    {
+                        var searchUrl = string.Format(_searchUrl, postType) + $"&q={Uri.EscapeDataString(term)}";
+                        var response = await RequestWithCookiesAndRetryAsync(
+                            searchUrl, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
+                            headers: _headers);
+
+                        // Check if API returned error
+                        if (response.ContentString.Contains("\"error\":true"))
+                        {
+                            continue; // Try next fallback term
+                        }
+
+                        pageReleases = await ParseReleasesAsync(response, queryForFilters, isLatest, term, rawSearchTerm, searchYear);
+
+                        if (pageReleases.Any())
+                        {
+                            break; // Found results, stop trying
+                        }
+                    }
+
+                    // If no results found with fallback terms, try TMDB translation (only once)
+                    if (!pageReleases.Any() && !tmdbTranslationAttempted)
+                    {
+                        tmdbTranslationAttempted = true;
+                        
+                        // Use original query term (before truncation) for TMDB search
+                        var originalTerm = query.GetQueryString()?.Trim();
+                        if (!string.IsNullOrWhiteSpace(originalTerm))
+                        {
+                            // Remove episode patterns and year for TMDB search
+                            originalTerm = Regex.Replace(originalTerm, @"\s+[Ss]\d{1,2}[Ee]\d{1,2}$", "").Trim();
+                            originalTerm = Regex.Replace(originalTerm, @"\s+\d{1,2}[xX]\d{1,2}$", "").Trim();
+                            if (searchYear.HasValue)
+                            {
+                                originalTerm = originalTerm.Replace(searchYear.Value.ToString(), "").Trim();
+                            }
+                        }
+                        
+                        var tmdbTranslation = await GetSpanishTitleFromTmdb(originalTerm ?? rawSearchTerm, searchYear, postType);
+                        tmdbTranslatedTitle = tmdbTranslation?.Title;
+                        tmdbMatchedYear = tmdbTranslation?.Year;
+                        if (!string.IsNullOrWhiteSpace(tmdbTranslatedTitle))
+                        {
+                            logger.Info($"TMDB translated '{rawSearchTerm}' to '{tmdbTranslatedTitle}'");
+                            if (!searchYear.HasValue && tmdbMatchedYear.HasValue)
+                            {
+                                searchYear = tmdbMatchedYear;
+                                rawSearchTermForFilter = $"{rawSearchTermForFilter} {searchYear.Value}".Trim();
+                            }
+                        }
+                    }
+
+                    // Use cached TMDB translation if available
+                    if (!pageReleases.Any() && !string.IsNullOrWhiteSpace(tmdbTranslatedTitle))
+                    {
+                        var searchUrl = string.Format(_searchUrl, postType) + $"&q={Uri.EscapeDataString(tmdbTranslatedTitle)}";
+                        var response = await RequestWithCookiesAndRetryAsync(
+                            searchUrl, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
+                            headers: _headers);
+
+                        if (!response.ContentString.Contains("\"error\":true"))
+                        {
+                            pageReleases = await ParseReleasesAsync(response, queryForFilters, isLatest, tmdbTranslatedTitle, rawSearchTermForFilter, searchYear);
+                        }
+                    }
+                }
+                else
+                {
+                    // Latest releases, no search term
+                    var latestUrl = string.Format(_latestUrl, postType);
+                    var response = await RequestWithCookiesAndRetryAsync(
+                        latestUrl, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
+                        headers: _headers);
+                    pageReleases = await ParseReleasesAsync(response, queryForFilters, isLatest, rawSearchTerm, rawSearchTermForFilter, searchYear);
+                }
 
                 foreach (var release in pageReleases)
                 {
@@ -168,12 +357,20 @@ namespace Jackett.Common.Indexers.Definitions
                         releases.Add(release);
                     }
                 }
+                
+                // Early exit if we have enough results for specific episode searches
+                var hasEpisodeRequest = !string.IsNullOrWhiteSpace(queryForFilters?.Episode);
+                if (hasEpisodeRequest && releases.Count >= 10)
+                {
+                    logger.Debug($"Early exit: Found {releases.Count} releases across postTypes, stopping search");
+                    break;
+                }
             }
 
             return releases;
         }
 
-        private async Task<List<ReleaseInfo>> ParseReleasesAsync(WebResult response, TorznabQuery query, bool isLatest)
+        private async Task<List<ReleaseInfo>> ParseReleasesAsync(WebResult response, TorznabQuery query, bool isLatest, string searchTerm, string originalSearchTerm, int? searchYear)
         {
             var releases = new List<ReleaseInfo>();
             var apiResponse = JsonSerializer.Deserialize<ApiResponse>(response.ContentString);
@@ -181,6 +378,22 @@ namespace Jackett.Common.Indexers.Definitions
             if (posts == null)
             {
                 return new();
+            }
+
+            // For episode-specific searches, limit how many shows we process to avoid excessive API calls
+            var hasEpisodeRequest = !string.IsNullOrWhiteSpace(query?.Episode);
+            var hasSeasonRequest = query?.Season > 0;
+            var maxShowsToProcess = hasEpisodeRequest ? 3 : int.MaxValue; // Only limit for episode-specific searches
+            var showsProcessed = 0;
+            var minReleasesForEarlyExit = hasEpisodeRequest ? 10 : int.MaxValue; // Stop after finding 10 releases for episode-specific search
+            var foundExactMatch = false;
+
+            var normalizedSearchTerm = originalSearchTerm?.Trim().ToLowerInvariant();
+            if (!string.IsNullOrWhiteSpace(normalizedSearchTerm))
+            {
+                posts = posts
+                    .OrderByDescending(post => IsExactTitleMatch(normalizedSearchTerm, post))
+                    .ToList();
             }
 
             foreach (var post in posts)
@@ -191,10 +404,36 @@ namespace Jackett.Common.Indexers.Definitions
                     continue;
                 }
 
-                if (!CheckTitleMatchWords(query.GetQueryString(), post.Title))
+                // Filter by year if specified in search query
+                if (searchYear.HasValue && !string.IsNullOrWhiteSpace(post.ReleaseDate))
                 {
-                    // skip if it doesn't contain all words
-                    continue;
+                    var postYear = post.ReleaseDate.Split('-')[0];
+                    if (int.TryParse(postYear, out var postYearInt) && postYearInt != searchYear.Value)
+                    {
+                        continue; // Skip if year doesn't match
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(searchTerm))
+                {
+                    // Match against both Spanish title and original English title
+                    // This allows finding content when searching for English titles
+                    var matchesTitle = CheckTitleMatchWords(searchTerm, post.Title, originalSearchTerm);
+                    var matchesOriginalTitle = !string.IsNullOrWhiteSpace(post.OriginalTitle) &&
+                                               CheckTitleMatchWords(searchTerm, post.OriginalTitle, originalSearchTerm);
+
+                    if (!matchesTitle && !matchesOriginalTitle)
+                    {
+                        // skip if it doesn't match either title
+                        continue;
+                    }
+                    
+                    // Check for exact match (case-insensitive, normalized)
+                    var normalizedSearch = originalSearchTerm.Trim().ToLowerInvariant();
+                    if (IsExactTitleMatch(normalizedSearch, post))
+                    {
+                        foundExactMatch = true;
+                    }
                 }
 
                 var year = post.ReleaseDate?.Split('-')[0];
@@ -208,7 +447,11 @@ namespace Jackett.Common.Indexers.Definitions
                 var details = new Uri($"{SiteLink}{slugType}{post.Slug}");
                 var detailsUrl = string.Format(_detailsUrl, post.Type) + $"&slug={post.Slug}";
                 var link = new Uri(detailsUrl);
-                var downloadUrls = await GetDownloadUrlsAsync(link, post.Type, isLatest);
+                var downloadUrls = await GetDownloadUrlsAsync(link, post.Type, isLatest, query);
+
+                showsProcessed++;
+
+                // Episode filtering is now done early in GetMultiplePostDownloadUrls for better performance
                 releases.AddRange(downloadUrls.Select(downloadUrl =>
                 {
                     var uriMagnet = new Uri(downloadUrl.Url);
@@ -251,7 +494,7 @@ namespace Jackett.Common.Indexers.Definitions
                         Guid = uriMagnet,
                         Details = details,
                         Link = uriMagnet,
-                        Title = $"{post.Title}.{episodePart}{quality}.{language}-la.movie",
+                        Title = $"{post.Title}.{episodePart}{quality}.{language}-LaMovie",
                         Category = categories,
                         Poster = new($"{SiteLink}wp-content/uploads{post.Images.Poster}"),
                         Year = year != null ? long.Parse(year) : DateTime.Now.Year,
@@ -263,12 +506,243 @@ namespace Jackett.Common.Indexers.Definitions
                         PublishDate = DateTime.Parse(post.LastUpdate)
                     };
                 }));
+
+                // Early exit optimizations for episode/season searches
+                if (hasEpisodeRequest || hasSeasonRequest)
+                {
+                    // Stop immediately if we found an exact title match and got releases
+                    if (foundExactMatch && releases.Count > 0)
+                    {
+                        logger.Debug($"Early exit: Found exact title match with {releases.Count} releases");
+                        break;
+                    }
+                    
+                    // Stop if we've found enough releases for episode-specific requests
+                    if (hasEpisodeRequest && releases.Count >= minReleasesForEarlyExit)
+                    {
+                        logger.Debug($"Early exit: Found {releases.Count} releases for specific episode search");
+                        break;
+                    }
+                    
+                    // Stop if we've processed enough shows without finding matches (episode-specific only)
+                    if (hasEpisodeRequest && showsProcessed >= maxShowsToProcess && releases.Count == 0)
+                    {
+                        logger.Debug($"Early exit: Processed {showsProcessed} shows without finding specific episode");
+                        break;
+                    }
+                }
             }
 
             return releases;
         }
 
-        private static bool CheckTitleMatchWords(string queryStr, string title)
+        /// <summary>
+        /// Generates progressive fallback search terms for Spanish title matching.
+        /// When searching with English titles against Spanish content, this method
+        /// creates increasingly shorter search terms to improve match probability.
+        /// </summary>
+        private async Task<TmdbTranslationResult> GetSpanishTitleFromTmdb(string englishTitle, int? year, string postType)
+        {
+            var tmdbApiKey = ((ConfigurationData.StringConfigurationItem)configData.GetDynamic("TmdbApiKey")).Value;
+            if (string.IsNullOrWhiteSpace(tmdbApiKey))
+            {
+                return null;
+            }
+
+            var cacheKey = BuildTmdbCacheKey(englishTitle, year, postType);
+            if (TryGetCachedTmdbTranslation(cacheKey, out var cachedResult))
+            {
+                return cachedResult;
+            }
+
+            try
+            {
+                var searchUrl = $"https://api.themoviedb.org/3/search/multi?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
+                if (year.HasValue)
+                {
+                    searchUrl += $"&year={year.Value}";
+                }
+
+                var response = await RequestWithCookiesAsync(searchUrl);
+                if (response.Status != System.Net.HttpStatusCode.OK)
+                {
+                    return null;
+                }
+
+                var json = JsonSerializer.Deserialize<TmdbSearchResponse>(response.ContentString);
+                if (json?.Results == null || json.Results.Count == 0)
+                {
+                    CacheTmdbTranslation(cacheKey, null, null);
+                    return null;
+                }
+
+                // Prioritize TV shows when searching in tvshows/animes
+                var isTvSearch = postType == "tvshows" || postType == "animes";
+                
+                // Filter by year and media type
+                TmdbResult matchingResult = null;
+                if (year.HasValue || isTvSearch)
+                {
+                    matchingResult = json.Results.FirstOrDefault(r =>
+                    {
+                        var matchesYear = true;
+                        if (year.HasValue)
+                        {
+                            var releaseYear = r.ReleaseDate?.Substring(0, 4);
+                            var firstAirYear = r.FirstAirDate?.Substring(0, 4);
+                            matchesYear = (releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value) ||
+                                         (firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value);
+                        }
+                        
+                        var matchesType = true;
+                        if (isTvSearch)
+                        {
+                            // Prefer TV shows (media_type == "tv") when searching for TV content
+                            matchesType = r.MediaType == "tv";
+                        }
+                        
+                        return matchesYear && matchesType;
+                    });
+                }
+
+                // If no match with filters, try just year
+                if (matchingResult == null && year.HasValue)
+                {
+                    matchingResult = json.Results.FirstOrDefault(r =>
+                    {
+                        var releaseYear = r.ReleaseDate?.Substring(0, 4);
+                        var firstAirYear = r.FirstAirDate?.Substring(0, 4);
+                        return (releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value) ||
+                               (firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value);
+                    });
+                }
+
+                // If still no match, use first TV result for TV searches
+                if (matchingResult == null && isTvSearch)
+                {
+                    matchingResult = json.Results.FirstOrDefault(r => r.MediaType == "tv");
+                }
+
+                // If no match with any filter, use first result
+                var result = matchingResult ?? json.Results[0];
+                var translatedTitle = result.Title ?? result.Name;
+                var translatedYear = ExtractTmdbResultYear(result);
+                CacheTmdbTranslation(cacheKey, translatedTitle, translatedYear);
+                return new TmdbTranslationResult
+                {
+                    Title = translatedTitle,
+                    Year = translatedYear
+                };
+            }
+            catch (Exception ex)
+            {
+                logger.Error($"Error fetching TMDB data: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static int? ExtractTmdbResultYear(TmdbResult result)
+        {
+            var releaseYear = result.ReleaseDate?.Substring(0, 4);
+            if (!string.IsNullOrWhiteSpace(releaseYear) && int.TryParse(releaseYear, out var ry))
+            {
+                return ry;
+            }
+
+            var firstAirYear = result.FirstAirDate?.Substring(0, 4);
+            if (!string.IsNullOrWhiteSpace(firstAirYear) && int.TryParse(firstAirYear, out var fay))
+            {
+                return fay;
+            }
+
+            return null;
+        }
+
+        private static string BuildTmdbCacheKey(string englishTitle, int? year, string postType)
+        {
+            var normalizedTitle = englishTitle?.Trim().ToLowerInvariant() ?? string.Empty;
+            var yearPart = year?.ToString() ?? string.Empty;
+            var typePart = postType?.Trim().ToLowerInvariant() ?? string.Empty;
+            return $"{typePart}|{yearPart}|{normalizedTitle}";
+        }
+
+        private static bool TryGetCachedTmdbTranslation(string cacheKey, out TmdbTranslationResult translatedResult)
+        {
+            translatedResult = null;
+            if (!TmdbTranslationCache.TryGetValue(cacheKey, out var entry))
+            {
+                return false;
+            }
+
+            if (entry.ExpiresAt <= DateTime.UtcNow)
+            {
+                TmdbTranslationCache.TryRemove(cacheKey, out _);
+                return false;
+            }
+
+            translatedResult = new TmdbTranslationResult
+            {
+                Title = entry.Title,
+                Year = entry.Year
+            };
+            return true;
+        }
+
+        private static void CacheTmdbTranslation(string cacheKey, string translatedTitle, int? translatedYear)
+        {
+            var ttl = translatedTitle == null ? TmdbTranslationNegativeCacheTtl : TmdbTranslationCacheTtl;
+            var entry = new TmdbCacheEntry
+            {
+                Title = translatedTitle,
+                Year = translatedYear,
+                ExpiresAt = DateTime.UtcNow.Add(ttl)
+            };
+
+            TmdbTranslationCache[cacheKey] = entry;
+        }
+
+        private static List<string> GetProgressiveFallbackTerms(string searchTerm)
+        {
+            var terms = new List<string>();
+            var words = searchTerm.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+
+            if (words.Length == 0)
+            {
+                return terms;
+            }
+
+            // Strategy 1: Try with full term (already truncated to 16 chars)
+            terms.Add(searchTerm);
+
+            // Filter out short/common words for fallback strategies
+            var significantWords = words.Where(w => w.Length > 3).ToList();
+
+            // Strategy 2: Try with first 2 significant words
+            if (significantWords.Count >= 2)
+            {
+                terms.Add(string.Join(" ", significantWords.Take(2)));
+            }
+            else if (words.Length >= 2)
+            {
+                // Fallback to first 2 words even if not significant
+                terms.Add(string.Join(" ", words.Take(2)));
+            }
+
+            // Strategy 3: Try with just first significant word
+            if (significantWords.Count >= 1)
+            {
+                terms.Add(significantWords[0]);
+            }
+            else if (words.Length >= 1 && words[0].Length >= 3)
+            {
+                // Fallback to first word if at least 3 chars
+                terms.Add(words[0]);
+            }
+
+            return terms;
+        }
+
+        private static bool CheckTitleMatchWords(string queryStr, string title, string originalQuery)
         {
             // this code split the words, remove words with 2 letters or less, remove accents and lowercase
             var queryMatches = Regex.Matches(queryStr, @"\b[\w']*\b");
@@ -280,10 +754,51 @@ namespace Jackett.Common.Indexers.Definitions
                              where !string.IsNullOrEmpty(m.Value) && m.Value.Length > 2
                              select Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower()));
             titleWords = titleWords.ToArray();
-            return queryWords.All(word => titleWords.Contains(word));
+
+            var queryWordsList = queryWords.ToList();
+
+            // If using fallback (queryStr is shorter than originalQuery), be more strict
+            // Require at least 2 matching words to avoid false positives
+            var originalWords = Regex.Matches(originalQuery, @"\b[\w']+\b").Cast<Match>()
+                .Select(m => Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower())))
+                .Where(w => w.Length > 2 && !Regex.IsMatch(w, @"^\d{4}$")) // Exclude years (4-digit numbers)
+                .ToList();
+
+            var originalWordCount = originalWords.Count;
+
+            if (queryWordsList.Count < originalWordCount)
+            {
+                // Using fallback: require matching based on original query size
+                var matchCount = originalWords.Count(word => titleWords.Contains(word));
+
+                if (originalWordCount == 2)
+                {
+                    // For 2-word queries, require both words to match
+                    return matchCount == 2;
+                }
+                else if (originalWordCount > 2)
+                {
+                    // For longer queries, require at least 2 words to match
+                    return matchCount >= 2;
+                }
+            }
+
+            return queryWordsList.All(word => titleWords.Contains(word));
         }
 
-        private async Task<List<Download>> GetDownloadUrlsAsync(Uri link, string postType, bool isLatest)
+        private static bool IsExactTitleMatch(string normalizedSearch, Post post)
+        {
+            if (string.IsNullOrWhiteSpace(normalizedSearch) || post == null)
+            {
+                return false;
+            }
+
+            var normalizedTitle = post.Title?.Trim().ToLowerInvariant() ?? string.Empty;
+            var normalizedOriginalTitle = post.OriginalTitle?.Trim().ToLowerInvariant() ?? string.Empty;
+            return normalizedTitle == normalizedSearch || normalizedOriginalTitle == normalizedSearch;
+        }
+
+        private async Task<List<Download>> GetDownloadUrlsAsync(Uri link, string postType, bool isLatest, TorznabQuery query = null)
         {
             var details = await RequestWithCookiesAndRetryAsync(
                 link.AbsoluteUri, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
@@ -292,23 +807,33 @@ namespace Jackett.Common.Indexers.Definitions
             var postId = (int)detailsResponse.Data.Id;
             if (postType is "tvshows" or "animes")
             {
-                return await GetMultiplePostDownloadUrls(postId, isLatest: isLatest);
+                return await GetMultiplePostDownloadUrls(postId, isLatest: isLatest, query: query);
             }
 
             return await GetSinglePostDownloadUrls(postId);
         }
 
         private async Task<List<Download>> GetMultiplePostDownloadUrls(
-            int postId, int seasonNumber = 1, bool isLatest = false)
+            int postId, int seasonNumber = 1, bool isLatest = false, TorznabQuery query = null)
         {
             var targetCount = int.MaxValue;
             var cutoffDate = DateTime.MinValue;
+            var requestedSeason = query?.Season ?? 0;
+            var requestedEpisode = !string.IsNullOrWhiteSpace(query?.Episode) ? ParseUtil.CoerceInt(query.Episode) : 0;
+            var hasEpisodeRequest = requestedEpisode > 0;
+            var hasSeasonRequest = requestedSeason > 0;
+            
             if (isLatest)
             {
                 var maxEpisodesSetting = ((ConfigurationData.StringConfigurationItem)configData.GetDynamic("MaxEpisodesPerSeries")).Value;
                 var maxEpisodesPerSeries = string.IsNullOrWhiteSpace(maxEpisodesSetting) ? 5 : ParseUtil.CoerceInt(maxEpisodesSetting);
                 targetCount = maxEpisodesPerSeries > 0 ? maxEpisodesPerSeries : int.MaxValue;
                 cutoffDate = DateTime.Now.AddDays(-7);
+            }
+            else if (hasEpisodeRequest)
+            {
+                // When searching for specific episode, only fetch that one
+                targetCount = 1;
             }
 
             var magnets = new List<Download>();
@@ -328,6 +853,12 @@ namespace Jackett.Common.Indexers.Definitions
                 .Distinct()
                 .OrderByDescending(s => s)
                 .ToList();
+            
+            // If specific season requested, only fetch that season
+            if (hasSeasonRequest)
+            {
+                seasonNumbers = seasonNumbers.Where(s => s == requestedSeason).ToList();
+            }
 
             var seenEpisodeIds = new HashSet<int>();
             foreach (var season in seasonNumbers)
@@ -344,13 +875,29 @@ namespace Jackett.Common.Indexers.Definitions
                     lastPage = 1;
                 }
 
-                for (var page = lastPage; page >= 1 && allEpisodes.Count < targetCount; page--)
+                // For specific episode requests, search from first page (episodes are usually ordered)
+                var startPage = hasEpisodeRequest ? 1 : lastPage;
+                var endPage = hasEpisodeRequest ? lastPage : 1;
+                var pageIncrement = hasEpisodeRequest ? 1 : -1;
+
+                for (var page = startPage; hasEpisodeRequest ? page <= endPage : page >= endPage; page += pageIncrement)
                 {
+                    if (allEpisodes.Count >= targetCount)
+                    {
+                        break;
+                    }
+                    
                     var pageResponse = await GetEpisodesResponse(postId, seasonNumber: season, maxEpisodes: perPage, page: page);
                     var pagePosts = pageResponse?.Data?.Posts;
                     if (pagePosts == null || pagePosts.Count == 0)
                     {
                         continue;
+                    }
+                    
+                    // Filter by specific episode if requested
+                    if (requestedEpisode > 0)
+                    {
+                        pagePosts = pagePosts.Where(p => p.EpisodeNumber == requestedEpisode).ToList();
                     }
 
                     if (isLatest)
@@ -393,6 +940,11 @@ namespace Jackett.Common.Indexers.Definitions
                     {
                         foreach (var episode in pagePosts.OrderByDescending(p => p.EpisodeNumber))
                         {
+                            if (allEpisodes.Count >= targetCount)
+                            {
+                                break;
+                            }
+                            
                             if (seenEpisodeIds.Add(episode.Id))
                             {
                                 allEpisodes.Add(episode);
@@ -454,6 +1006,8 @@ namespace Jackett.Common.Indexers.Definitions
         {
             [JsonPropertyName("title")]
             public string Title { get; set; }
+            [JsonPropertyName("original_title")]
+            public string OriginalTitle { get; set; }
 
             [JsonPropertyName("slug")]
             public string Slug { get; set; }
@@ -530,6 +1084,19 @@ namespace Jackett.Common.Indexers.Definitions
             public string Episode { get; set; }
         }
 
+        private class TmdbCacheEntry
+        {
+            public string Title { get; set; }
+            public int? Year { get; set; }
+            public DateTime ExpiresAt { get; set; }
+        }
+
+        private class TmdbTranslationResult
+        {
+            public string Title { get; set; }
+            public int? Year { get; set; }
+        }
+
         public class EpisodesResponse
         {
             [JsonPropertyName("data")]
@@ -576,6 +1143,30 @@ namespace Jackett.Common.Indexers.Definitions
 
             [JsonPropertyName("per_page")]
             public int PerPage { get; set; }
+        }
+
+        public class TmdbSearchResponse
+        {
+            [JsonPropertyName("results")]
+            public List<TmdbResult> Results { get; set; }
+        }
+
+        public class TmdbResult
+        {
+            [JsonPropertyName("title")]
+            public string Title { get; set; }
+
+            [JsonPropertyName("name")]
+            public string Name { get; set; }
+
+            [JsonPropertyName("release_date")]
+            public string ReleaseDate { get; set; }
+
+            [JsonPropertyName("first_air_date")]
+            public string FirstAirDate { get; set; }
+
+            [JsonPropertyName("media_type")]
+            public string MediaType { get; set; }
         }
     }
 }
