@@ -557,10 +557,23 @@ namespace Jackett.Common.Indexers.Definitions
 
             try
             {
-                var searchUrl = $"https://api.themoviedb.org/3/search/multi?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
-                if (year.HasValue)
+                var isTvSearch = postType == "tvshows" || postType == "animes";
+                
+                // Use specific endpoints that support year filtering
+                string searchUrl;
+                if (isTvSearch)
                 {
-                    searchUrl += $"&year={year.Value}";
+                    // Use TV endpoint with first_air_date_year
+                    searchUrl = $"https://api.themoviedb.org/3/search/tv?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
+                    if (year.HasValue)
+                        searchUrl += $"&first_air_date_year={year.Value}";
+                }
+                else
+                {
+                    // Use movie endpoint with year
+                    searchUrl = $"https://api.themoviedb.org/3/search/movie?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
+                    if (year.HasValue)
+                        searchUrl += $"&year={year.Value}";
                 }
 
                 var response = await RequestWithCookiesAsync(searchUrl);
@@ -576,63 +589,32 @@ namespace Jackett.Common.Indexers.Definitions
                     return null;
                 }
 
-                // Prioritize TV shows when searching in tvshows/animes
-                var isTvSearch = postType == "tvshows" || postType == "animes";
-                
-                // Filter by year and media type
+                // If year is specified, prefer exact year match
                 TmdbResult matchingResult = null;
-                if (year.HasValue || isTvSearch)
+                if (year.HasValue)
                 {
                     matchingResult = json.Results.FirstOrDefault(r =>
                     {
-                        var matchesYear = true;
-                        if (year.HasValue)
-                        {
-                            var releaseYear = r.ReleaseDate?.Substring(0, 4);
-                            var firstAirYear = r.FirstAirDate?.Substring(0, 4);
-                            matchesYear = (releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value) ||
-                                         (firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value);
-                        }
-                        
-                        var matchesType = true;
                         if (isTvSearch)
                         {
-                            // Prefer TV shows (media_type == "tv") when searching for TV content
-                            matchesType = r.MediaType == "tv";
+                            var firstAirYear = r.FirstAirDate?.Substring(0, 4);
+                            return firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value;
                         }
-                        
-                        return matchesYear && matchesType;
+                        else
+                        {
+                            var releaseYear = r.ReleaseDate?.Substring(0, 4);
+                            return releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value;
+                        }
                     });
                 }
 
-                // If no match with filters, try just year
-                if (matchingResult == null && year.HasValue)
-                {
-                    matchingResult = json.Results.FirstOrDefault(r =>
-                    {
-                        var releaseYear = r.ReleaseDate?.Substring(0, 4);
-                        var firstAirYear = r.FirstAirDate?.Substring(0, 4);
-                        return (releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value) ||
-                               (firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value);
-                    });
-                }
-
-                // If still no match, use first TV result for TV searches
-                if (matchingResult == null && isTvSearch)
-                {
-                    matchingResult = json.Results.FirstOrDefault(r => r.MediaType == "tv");
-                }
-
-                // If no match with any filter, use first result
+                // Use first result if no exact year match
                 var result = matchingResult ?? json.Results[0];
-                var translatedTitle = result.Title ?? result.Name;
-                var translatedYear = ExtractTmdbResultYear(result);
-                CacheTmdbTranslation(cacheKey, translatedTitle, translatedYear);
-                return new TmdbTranslationResult
-                {
-                    Title = translatedTitle,
-                    Year = translatedYear
-                };
+                var spanishTitle = result.Title ?? result.Name;
+                var tmdbYear = ExtractTmdbResultYear(result);
+                
+                CacheTmdbTranslation(cacheKey, spanishTitle, tmdbYear);
+                return new TmdbTranslationResult { Title = spanishTitle, Year = tmdbYear };
             }
             catch (Exception ex)
             {

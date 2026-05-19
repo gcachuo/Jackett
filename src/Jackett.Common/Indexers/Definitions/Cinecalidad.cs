@@ -756,7 +756,8 @@ namespace Jackett.Common.Indexers.Definitions
 
             try
             {
-                var searchUrl = $"https://api.themoviedb.org/3/search/multi?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
+                // Cinecalidad is movies only, use /search/movie endpoint with year parameter
+                var searchUrl = $"https://api.themoviedb.org/3/search/movie?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
                 if (year.HasValue)
                 {
                     searchUrl += $"&year={year.Value}";
@@ -774,54 +775,18 @@ namespace Jackett.Common.Indexers.Definitions
                     return null;
                 }
 
-                // Prioritize movies when searching in movies
-                var isMovieSearch = postType == "movies";
-                
-                // Filter by year and media type
+                // If year is specified, prefer exact year match
                 TmdbResult matchingResult = null;
-                if (year.HasValue || isMovieSearch)
-                {
-                    matchingResult = json.Results.FirstOrDefault(r =>
-                    {
-                        var matchesYear = true;
-                        if (year.HasValue)
-                        {
-                            var releaseYear = r.ReleaseDate?.Substring(0, 4);
-                            var firstAirYear = r.FirstAirDate?.Substring(0, 4);
-                            matchesYear = (releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value) ||
-                                         (firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value);
-                        }
-                        
-                        var matchesType = true;
-                        if (isMovieSearch)
-                        {
-                            // Prefer movies (media_type == "movie") when searching for movie content
-                            matchesType = r.MediaType == "movie";
-                        }
-                        
-                        return matchesYear && matchesType;
-                    });
-                }
-
-                // If no match with filters, try just year
-                if (matchingResult == null && year.HasValue)
+                if (year.HasValue)
                 {
                     matchingResult = json.Results.FirstOrDefault(r =>
                     {
                         var releaseYear = r.ReleaseDate?.Substring(0, 4);
-                        var firstAirYear = r.FirstAirDate?.Substring(0, 4);
-                        return (releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value) ||
-                               (firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value);
+                        return releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value;
                     });
                 }
 
-                // If still no match, use first movie result for movie searches
-                if (matchingResult == null && isMovieSearch)
-                {
-                    matchingResult = json.Results.FirstOrDefault(r => r.MediaType == "movie");
-                }
-
-                // If no match with any filter, use first result
+                // Use first result if no exact year match
                 var result = matchingResult ?? json.Results[0];
                 return result.Title ?? result.Name;
             }
