@@ -121,22 +121,22 @@ namespace Jackett.Common.Indexers.Definitions
             }
 
             var isSearch = !string.IsNullOrWhiteSpace(searchTerm);
-            
+
             // Progressive fallback: try with fewer words if full term doesn't work
             var searchTerms = new List<string>();
             if (isSearch)
             {
                 var words = searchTerm.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                
+
                 // Try full term first
                 searchTerms.Add(searchTerm);
-                
+
                 // Try with first 3 words if we have more
                 if (words.Length > 3)
                 {
                     searchTerms.Add(string.Join(" ", words.Take(3)));
                 }
-                
+
                 // Try with first 2 words if we have more than 2
                 if (words.Length > 2)
                 {
@@ -145,18 +145,18 @@ namespace Jackett.Common.Indexers.Definitions
             }
 
             var lastPublishDate = DateTime.Now;
-            
+
             foreach (var currentSearchTerm in searchTerms.Any() ? searchTerms : new List<string> { "" })
             {
                 var currentTemplateUrl = $"{SiteLink}{{0}}?s=";
                 var currentMaxPages = MaxLatestPageLimit;
-                
+
                 if (!string.IsNullOrWhiteSpace(currentSearchTerm))
                 {
                     currentTemplateUrl += WebUtilityHelpers.UrlEncode(currentSearchTerm, Encoding.UTF8);
                     currentMaxPages = MaxSearchPageLimit;
                 }
-                
+
                 for (var page = 1; page <= currentMaxPages; page++)
                 {
                     var pageParam = page > 1 ? $"page/{page}/" : string.Empty;
@@ -178,7 +178,7 @@ namespace Jackett.Common.Indexers.Definitions
                         break;
                     }
                 }
-                
+
                 // If we found results, stop trying fallback terms
                 if (releases.Any())
                 {
@@ -204,10 +204,10 @@ namespace Jackett.Common.Indexers.Definitions
                     if (!string.IsNullOrWhiteSpace(spanishTitle))
                     {
                         logger.Info($"TMDB translated '{searchTermForTmdb}' to '{spanishTitle}'");
-                        
+
                         var currentTemplateUrl = $"{SiteLink}{{0}}?s=";
                         currentTemplateUrl += WebUtilityHelpers.UrlEncode(spanishTitle, Encoding.UTF8);
-                        
+
                         for (var page = 1; page <= MaxSearchPageLimit; page++)
                         {
                             var pageParam = page > 1 ? $"page/{page}/" : string.Empty;
@@ -619,7 +619,7 @@ namespace Jackett.Common.Indexers.Definitions
                         ? string.Join("\n", descriptionParts)
                         : null;
 
-                    if (!CheckTitleMatchWords(searchTerm, title))
+                    if (!CheckTitleMatchWords(searchTerm, title, query.GetQueryString()))
                     {
                         continue;
                     }
@@ -784,7 +784,7 @@ namespace Jackett.Common.Indexers.Definitions
                         var releaseYear = r.ReleaseDate?.Substring(0, 4);
                         return releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value;
                     });
-                    
+
                     // If year specified but no match found, return null instead of wrong result
                     if (result == null)
                         return null;
@@ -805,7 +805,7 @@ namespace Jackett.Common.Indexers.Definitions
         }
 
         // TODO: merge this method with query.MatchQueryStringAND
-        private static bool CheckTitleMatchWords(string queryStr, string title)
+        private static bool CheckTitleMatchWords(string queryStr, string title, string originalQuery)
         {
             if (string.IsNullOrWhiteSpace(queryStr))
             {
@@ -815,30 +815,47 @@ namespace Jackett.Common.Indexers.Definitions
             // this code split the words, remove words with 2 letters or less, remove accents and lowercase
             var queryMatches = Regex.Matches(queryStr, @"\b[\w']*\b");
             var queryWords = from m in queryMatches.Cast<Match>()
-                             where !string.IsNullOrEmpty(m.Value) && m.Value.Length > 2
+                             where !string.IsNullOrEmpty(m.Value) && (m.Value.Length > 2 || char.IsDigit(m.Value[0]))
                              select Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower()));
 
             var titleMatches = Regex.Matches(title, @"\b[\w']*\b");
             var titleWords = from m in titleMatches.Cast<Match>()
-                             where !string.IsNullOrEmpty(m.Value) && m.Value.Length > 2
+                             where !string.IsNullOrEmpty(m.Value) && (m.Value.Length > 2 || char.IsDigit(m.Value[0]))
                              select Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower()));
             titleWords = titleWords.ToArray();
 
             var queryWordsList = queryWords.ToList();
-            
-            // Filter out years for more flexible matching
-            var significantQueryWords = queryWordsList
-                .Where(w => !Regex.IsMatch(w, @"^\d{4}$"))
+
+            var originalWords = Regex.Matches(originalQuery ?? queryStr, @"\b[\w']+\b").Cast<Match>()
+                .Select(m => Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower())))
+                .Where(w => (w.Length > 2 || char.IsDigit(w[0])) && !Regex.IsMatch(w, @"^\d{4}$")) // Exclude years (4-digit numbers)
                 .ToList();
 
-            // If we have 2+ words, require at least 2 to match
-            if (significantQueryWords.Count >= 2)
+            var requiredDigits = originalWords.Where(w => w.All(char.IsDigit)).ToList();
+            if (requiredDigits.Count > 0 && requiredDigits.Any(digit => !titleWords.Contains(digit)))
             {
-                var matchCount = significantQueryWords.Count(word => titleWords.Contains(word));
-                return matchCount >= 2;
+                return false;
             }
 
-            // Fallback to original logic for short queries
+            var originalWordCount = originalWords.Count;
+
+            if (queryWordsList.Count < originalWordCount)
+            {
+                // Using fallback: require matching based on original query size
+                var matchCount = originalWords.Count(word => titleWords.Contains(word));
+
+                if (originalWordCount == 2)
+                {
+                    // For 2-word queries, require both words to match
+                    return matchCount == 2;
+                }
+                else if (originalWordCount > 2)
+                {
+                    // For longer queries, require at least 2 words to match
+                    return matchCount >= 2;
+                }
+            }
+
             return queryWordsList.All(word => titleWords.Contains(word));
         }
 

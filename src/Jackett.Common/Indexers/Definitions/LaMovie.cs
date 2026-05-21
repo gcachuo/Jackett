@@ -107,6 +107,7 @@ namespace Jackett.Common.Indexers.Definitions
         {
             var releases = new List<ReleaseInfo>();
             var rawSearchTerm = query.GetQueryString()?.Trim();
+            var rawSearchTermForFilter = rawSearchTerm;
             int? searchYear = null;
             int? parsedSeason = null;
             string parsedEpisode = null;
@@ -163,6 +164,10 @@ namespace Jackett.Common.Indexers.Definitions
                     searchYear = int.Parse(yearMatch.Value);
                     // Remove year from search term
                     rawSearchTerm = rawSearchTerm.Replace(yearMatch.Value, "").Trim();
+                    if (!string.IsNullOrWhiteSpace(rawSearchTermForFilter))
+                    {
+                        rawSearchTermForFilter = rawSearchTermForFilter.Replace(yearMatch.Value, "").Trim();
+                    }
                 }
             }
 
@@ -178,6 +183,13 @@ namespace Jackett.Common.Indexers.Definitions
                 rawSearchTerm = Regex.Replace(rawSearchTerm, @"\s+[Ss]\d{1,2}$", "").Trim();
             }
 
+            if (!string.IsNullOrWhiteSpace(rawSearchTermForFilter))
+            {
+                rawSearchTermForFilter = Regex.Replace(rawSearchTermForFilter, @"\s+[Ss]\d{1,2}[Ee]\d{1,2}$", "").Trim();
+                rawSearchTermForFilter = Regex.Replace(rawSearchTermForFilter, @"\s+\d{1,2}[xX]\d{1,2}$", "").Trim();
+                rawSearchTermForFilter = Regex.Replace(rawSearchTermForFilter, @"\s+[Ss]\d{1,2}$", "").Trim();
+            }
+
             // Limit search term to 16 characters to match the website's search API behavior for better title matching
             // The website uses: const Fe = xe.substring(0, 16);
             if (!string.IsNullOrWhiteSpace(rawSearchTerm) && rawSearchTerm.Length > 16)
@@ -187,8 +199,6 @@ namespace Jackett.Common.Indexers.Definitions
 
             var searchTerm = !string.IsNullOrWhiteSpace(rawSearchTerm) ? Uri.EscapeDataString(rawSearchTerm) : string.Empty;
             var isLatest = string.IsNullOrWhiteSpace(rawSearchTerm);
-            var rawSearchTermForFilter = rawSearchTerm;
-
             if (!isLatest && rawSearchTerm.Length < 3)
             {
                 var msg = $"Search term must have at least 3 characters. Used search term: '{rawSearchTerm}' (length {rawSearchTerm.Length}).";
@@ -280,7 +290,7 @@ namespace Jackett.Common.Indexers.Definitions
                             continue; // Try next fallback term
                         }
 
-                        pageReleases = await ParseReleasesAsync(response, queryForFilters, isLatest, term, rawSearchTerm, searchYear);
+                        pageReleases = await ParseReleasesAsync(response, queryForFilters, isLatest, term, rawSearchTermForFilter, searchYear);
 
                         if (pageReleases.Any())
                         {
@@ -774,10 +784,15 @@ namespace Jackett.Common.Indexers.Definitions
                     // For 2-word queries, require both words to match
                     return matchCount == 2;
                 }
-                else if (originalWordCount > 2)
+                else if (originalWordCount == 3)
                 {
-                    // For longer queries, require at least 2 words to match
+                    // For 3-word queries, require at least 2 words
                     return matchCount >= 2;
+                }
+                else if (originalWordCount > 3)
+                {
+                    // For longer queries, require at least 3 words to match
+                    return matchCount >= 3;
                 }
             }
 
