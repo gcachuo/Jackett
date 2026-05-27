@@ -400,6 +400,10 @@ namespace Jackett.Common.Indexers.Definitions
 
             var normalizedSearchTerm = originalSearchTerm?.Trim().ToLowerInvariant();
             var strictQuery = BuildStrictQuery(originalSearchTerm);
+            var strictSearchTerm = BuildStrictQuery(searchTerm);
+            var allowAlternateStrict = !string.IsNullOrWhiteSpace(strictQuery) &&
+                                       !string.IsNullOrWhiteSpace(strictSearchTerm) &&
+                                       !TitleContainsAllWords(strictSearchTerm, strictQuery);
             if (!string.IsNullOrWhiteSpace(normalizedSearchTerm))
             {
                 posts = posts
@@ -439,15 +443,33 @@ namespace Jackett.Common.Indexers.Definitions
                         continue;
                     }
 
+                    var strictMatches = true;
                     if (!string.IsNullOrWhiteSpace(strictQuery))
                     {
                         var strictMatchesTitle = TitleContainsAllWords(strictQuery, post.Title);
                         var strictMatchesOriginalTitle = !string.IsNullOrWhiteSpace(post.OriginalTitle) &&
                                                           TitleContainsAllWords(strictQuery, post.OriginalTitle);
-                        if (!strictMatchesTitle && !strictMatchesOriginalTitle)
-                        {
-                            continue;
-                        }
+                        strictMatches = strictMatchesTitle || strictMatchesOriginalTitle;
+                    }
+                    else if (!string.IsNullOrWhiteSpace(strictSearchTerm))
+                    {
+                        var strictMatchesTitle = TitleContainsAllWords(strictSearchTerm, post.Title);
+                        var strictMatchesOriginalTitle = !string.IsNullOrWhiteSpace(post.OriginalTitle) &&
+                                                          TitleContainsAllWords(strictSearchTerm, post.OriginalTitle);
+                        strictMatches = strictMatchesTitle || strictMatchesOriginalTitle;
+                    }
+
+                    if (!strictMatches && allowAlternateStrict)
+                    {
+                        var strictMatchesTitle = TitleContainsAllWords(strictSearchTerm, post.Title);
+                        var strictMatchesOriginalTitle = !string.IsNullOrWhiteSpace(post.OriginalTitle) &&
+                                                          TitleContainsAllWords(strictSearchTerm, post.OriginalTitle);
+                        strictMatches = strictMatchesTitle || strictMatchesOriginalTitle;
+                    }
+
+                    if (!strictMatches)
+                    {
+                        continue;
                     }
 
                     // Check for exact match (case-insensitive, normalized)

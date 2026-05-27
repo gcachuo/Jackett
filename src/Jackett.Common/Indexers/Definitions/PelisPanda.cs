@@ -350,8 +350,13 @@ namespace Jackett.Common.Indexers.Definitions
                 }
             }
 
-            var searchTerm = BuildStrictQuery(rawSearchTerm);
-            var normalizedSearchTerm = searchTerm?.ToLowerInvariant();
+            var requestSearchTerm = ExtractSearchTerm(indexerResponse);
+            var strictQuery = BuildStrictQuery(rawSearchTerm);
+            var strictSearchTerm = BuildStrictQuery(requestSearchTerm);
+            var allowAlternateStrict = !string.IsNullOrWhiteSpace(strictQuery) &&
+                                       !string.IsNullOrWhiteSpace(strictSearchTerm) &&
+                                       !TitleContainsAllWords(strictSearchTerm, strictQuery);
+            var normalizedSearchTerm = strictQuery?.ToLowerInvariant();
 
             var items = new List<(int Index, JObject Item, string DetailUrl, string Type)>();
             foreach (var raw in results.OfType<JObject>())
@@ -385,19 +390,42 @@ namespace Jackett.Common.Indexers.Definitions
                 }
 
                 // Strict local filtering: title must contain all query words
-                if (!string.IsNullOrWhiteSpace(searchTerm))
+                var strictMatches = true;
+                if (!string.IsNullOrWhiteSpace(strictQuery))
                 {
                     var title = (string)raw["title"];
                     var originalTitle = (string)raw["original_title"];
 
-                    var matchesTitle = TitleContainsAllWords(searchTerm, title);
+                    var matchesTitle = TitleContainsAllWords(strictQuery, title);
                     var matchesOriginalTitle = !string.IsNullOrWhiteSpace(originalTitle) &&
-                                               TitleContainsAllWords(searchTerm, originalTitle);
+                                               TitleContainsAllWords(strictQuery, originalTitle);
+                    strictMatches = matchesTitle || matchesOriginalTitle;
+                }
+                else if (!string.IsNullOrWhiteSpace(strictSearchTerm))
+                {
+                    var title = (string)raw["title"];
+                    var originalTitle = (string)raw["original_title"];
 
-                    if (!matchesTitle && !matchesOriginalTitle)
-                    {
-                        continue;
-                    }
+                    var matchesTitle = TitleContainsAllWords(strictSearchTerm, title);
+                    var matchesOriginalTitle = !string.IsNullOrWhiteSpace(originalTitle) &&
+                                               TitleContainsAllWords(strictSearchTerm, originalTitle);
+                    strictMatches = matchesTitle || matchesOriginalTitle;
+                }
+
+                if (!strictMatches && allowAlternateStrict)
+                {
+                    var title = (string)raw["title"];
+                    var originalTitle = (string)raw["original_title"];
+
+                    var matchesTitle = TitleContainsAllWords(strictSearchTerm, title);
+                    var matchesOriginalTitle = !string.IsNullOrWhiteSpace(originalTitle) &&
+                                               TitleContainsAllWords(strictSearchTerm, originalTitle);
+                    strictMatches = matchesTitle || matchesOriginalTitle;
+                }
+
+                if (!strictMatches)
+                {
+                    continue;
                 }
 
                 items.Add((items.Count, raw, detailUrl, type));
@@ -478,6 +506,43 @@ namespace Jackett.Common.Indexers.Definitions
                 .Where(w => w.Length > 1 || char.IsDigit(w[0])));
 
             return queryWords.All(word => titleWordSet.Contains(word));
+        }
+
+        private static string ExtractSearchTerm(IndexerResponse indexerResponse)
+        {
+            if (indexerResponse?.Request?.Url == null)
+            {
+                return null;
+            }
+
+            if (!Uri.TryCreate(indexerResponse.Request.Url, UriKind.Absolute, out var requestUri))
+            {
+                return null;
+            }
+
+            var query = requestUri.Query.TrimStart('?');
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                return null;
+            }
+
+            foreach (var part in query.Split(new[] { '&' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var keyValue = part.Split(new[] { '=' }, 2);
+                if (keyValue.Length != 2)
+                {
+                    continue;
+                }
+
+                if (!keyValue[0].Equals("query", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                return Uri.UnescapeDataString(keyValue[1]);
+            }
+
+            return null;
         }
 
         private static bool IsExactTitleMatch(string normalizedSearch, JObject item)
