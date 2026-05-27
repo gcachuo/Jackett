@@ -399,6 +399,7 @@ namespace Jackett.Common.Indexers.Definitions
             var foundExactMatch = false;
 
             var normalizedSearchTerm = originalSearchTerm?.Trim().ToLowerInvariant();
+            var strictQuery = BuildStrictQuery(originalSearchTerm);
             if (!string.IsNullOrWhiteSpace(normalizedSearchTerm))
             {
                 posts = posts
@@ -436,6 +437,17 @@ namespace Jackett.Common.Indexers.Definitions
                     {
                         // skip if it doesn't match either title
                         continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(strictQuery))
+                    {
+                        var strictMatchesTitle = TitleContainsAllWords(strictQuery, post.Title);
+                        var strictMatchesOriginalTitle = !string.IsNullOrWhiteSpace(post.OriginalTitle) &&
+                                                          TitleContainsAllWords(strictQuery, post.OriginalTitle);
+                        if (!strictMatchesTitle && !strictMatchesOriginalTitle)
+                        {
+                            continue;
+                        }
                     }
 
                     // Check for exact match (case-insensitive, normalized)
@@ -776,6 +788,17 @@ namespace Jackett.Common.Indexers.Definitions
 
             if (queryWordsList.Count < originalWordCount)
             {
+                var originalWordSet = new HashSet<string>(originalWords);
+                var queryWordSet = new HashSet<string>(queryWordsList);
+                if (queryWordSet.All(originalWordSet.Contains))
+                {
+                    var missingWords = originalWordSet.Except(queryWordSet).ToList();
+                    if (missingWords.Count > 0 && !missingWords.Any(word => titleWords.Contains(word)))
+                    {
+                        return false;
+                    }
+                }
+
                 // Using fallback: require matching based on original query size
                 var matchCount = originalWords.Count(word => titleWords.Contains(word));
 
@@ -797,6 +820,44 @@ namespace Jackett.Common.Indexers.Definitions
             }
 
             return queryWordsList.All(word => titleWords.Contains(word));
+        }
+
+        private static string BuildStrictQuery(string query)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                return null;
+            }
+
+            var cleaned = Regex.Replace(query, @"\b(19\d{2}|20\d{2})\b", " ");
+            cleaned = Regex.Replace(cleaned, @"\s+[Ss]\d{1,2}[Ee]\d{1,2}$", " ");
+            cleaned = Regex.Replace(cleaned, @"\s+\d{1,2}[xX]\d{1,2}$", " ");
+            cleaned = Regex.Replace(cleaned, @"\s+", " ").Trim();
+            return cleaned;
+        }
+
+        private static bool TitleContainsAllWords(string query, string title)
+        {
+            if (string.IsNullOrWhiteSpace(query) || string.IsNullOrWhiteSpace(title))
+            {
+                return false;
+            }
+
+            var queryWords = Regex.Matches(query, @"\b[\w']+\b").Cast<Match>()
+                .Select(m => Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLowerInvariant())))
+                .Where(w => w.Length > 1 || char.IsDigit(w[0]))
+                .ToList();
+
+            if (queryWords.Count == 0)
+            {
+                return true;
+            }
+
+            var titleWordSet = new HashSet<string>(Regex.Matches(title, @"\b[\w']+\b").Cast<Match>()
+                .Select(m => Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLowerInvariant())))
+                .Where(w => w.Length > 1 || char.IsDigit(w[0])));
+
+            return queryWords.All(word => titleWordSet.Contains(word));
         }
 
         private static bool IsExactTitleMatch(string normalizedSearch, Post post)

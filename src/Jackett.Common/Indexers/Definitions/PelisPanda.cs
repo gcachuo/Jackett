@@ -339,14 +339,18 @@ namespace Jackett.Common.Indexers.Definitions
                 results = new JArray();
 
             // Get normalized search term for filtering
-            var searchTerm = _currentQuery?.SearchTerm?.Trim();
-            if (!string.IsNullOrWhiteSpace(searchTerm))
+            var rawSearchTerm = _currentQuery?.SearchTerm?.Trim();
+            int? searchYear = null;
+            if (!string.IsNullOrWhiteSpace(rawSearchTerm))
             {
-                // Remove year and episode patterns from search term for matching
-                searchTerm = Regex.Replace(searchTerm, @"\b(19\d{2}|20\d{2})\b", "").Trim();
-                searchTerm = Regex.Replace(searchTerm, @"\s+[Ss]\d{1,2}[Ee]\d{1,2}$", "").Trim();
-                searchTerm = Regex.Replace(searchTerm, @"\s+\d{1,2}[xX]\d{1,2}$", "").Trim();
+                var yearMatch = Regex.Match(rawSearchTerm, @"\b(19\d{2}|20\d{2})\b");
+                if (yearMatch.Success && int.TryParse(yearMatch.Value, out var parsedYear))
+                {
+                    searchYear = parsedYear;
+                }
             }
+
+            var searchTerm = BuildStrictQuery(rawSearchTerm);
             var normalizedSearchTerm = searchTerm?.ToLowerInvariant();
 
             var items = new List<(int Index, JObject Item, string DetailUrl, string Type)>();
@@ -361,19 +365,37 @@ namespace Jackett.Common.Indexers.Definitions
                     continue;
                 }
 
-                // Filter results by title matching (like LaMovie)
-                if (!string.IsNullOrWhiteSpace(normalizedSearchTerm))
+                if (searchYear.HasValue)
+                {
+                    int? itemYear = null;
+                    if (raw["year"]?.Type == JTokenType.Integer)
+                    {
+                        itemYear = (int?)raw["year"];
+                    }
+                    else if (raw["year"]?.Type == JTokenType.String &&
+                             int.TryParse((string)raw["year"], out var parsedItemYear))
+                    {
+                        itemYear = parsedItemYear;
+                    }
+
+                    if (!itemYear.HasValue || itemYear.Value != searchYear.Value)
+                    {
+                        continue;
+                    }
+                }
+
+                // Strict local filtering: title must contain all query words
+                if (!string.IsNullOrWhiteSpace(searchTerm))
                 {
                     var title = (string)raw["title"];
                     var originalTitle = (string)raw["original_title"];
 
-                    var matchesTitle = CheckTitleMatchWords(normalizedSearchTerm, title, normalizedSearchTerm);
+                    var matchesTitle = TitleContainsAllWords(searchTerm, title);
                     var matchesOriginalTitle = !string.IsNullOrWhiteSpace(originalTitle) &&
-                                               CheckTitleMatchWords(normalizedSearchTerm, originalTitle, normalizedSearchTerm);
+                                               TitleContainsAllWords(searchTerm, originalTitle);
 
                     if (!matchesTitle && !matchesOriginalTitle)
                     {
-                        // Skip if it doesn't match either title
                         continue;
                     }
                 }
@@ -420,54 +442,42 @@ namespace Jackett.Common.Indexers.Definitions
             return releases;
         }
 
-        private static bool CheckTitleMatchWords(string queryStr, string title, string originalQuery)
+        private static string BuildStrictQuery(string query)
         {
-            // this code split the words, remove words with 2 letters or less, remove accents and lowercase
-            var queryMatches = Regex.Matches(queryStr, @"\b[\w']*\b");
-            var queryWords = from m in queryMatches.Cast<Match>()
-                             where !string.IsNullOrEmpty(m.Value) && (m.Value.Length > 2 || char.IsDigit(m.Value[0]))
-                             select Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower()));
-            var titleMatches = Regex.Matches(title, @"\b[\w']*\b");
-            var titleWords = from m in titleMatches.Cast<Match>()
-                             where !string.IsNullOrEmpty(m.Value) && (m.Value.Length > 2 || char.IsDigit(m.Value[0]))
-                             select Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower()));
-            titleWords = titleWords.ToArray();
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                return null;
+            }
 
-            var queryWordsList = queryWords.ToList();
+            var cleaned = Regex.Replace(query, @"\b(19\d{2}|20\d{2})\b", " ");
+            cleaned = Regex.Replace(cleaned, @"\s+[Ss]\d{1,2}[Ee]\d{1,2}$", " ");
+            cleaned = Regex.Replace(cleaned, @"\s+\d{1,2}[xX]\d{1,2}$", " ");
+            cleaned = Regex.Replace(cleaned, @"\s+", " ").Trim();
+            return cleaned;
+        }
 
-            // If using fallback (queryStr is shorter than originalQuery), be more strict
-            // Require at least 2 matching words to avoid false positives
-            var originalWords = Regex.Matches(originalQuery, @"\b[\w']+\b").Cast<Match>()
-                .Select(m => Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLower())))
-                .Where(w => (w.Length > 2 || char.IsDigit(w[0])) && !Regex.IsMatch(w, @"^\d{4}$")) // Exclude years (4-digit numbers)
-                .ToList();
-
-            var requiredDigits = originalWords.Where(w => w.All(char.IsDigit)).ToList();
-            if (requiredDigits.Count > 0 && requiredDigits.Any(digit => !titleWords.Contains(digit)))
+        private static bool TitleContainsAllWords(string query, string title)
+        {
+            if (string.IsNullOrWhiteSpace(query) || string.IsNullOrWhiteSpace(title))
             {
                 return false;
             }
 
-            var originalWordCount = originalWords.Count;
+            var queryWords = Regex.Matches(query, @"\b[\w']+\b").Cast<Match>()
+                .Select(m => Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLowerInvariant())))
+                .Where(w => w.Length > 1 || char.IsDigit(w[0]))
+                .ToList();
 
-            if (queryWordsList.Count < originalWordCount)
+            if (queryWords.Count == 0)
             {
-                // Using fallback: require matching based on original query size
-                var matchCount = originalWords.Count(word => titleWords.Contains(word));
-
-                if (originalWordCount == 2)
-                {
-                    // For 2-word queries, require both words to match
-                    return matchCount == 2;
-                }
-                else if (originalWordCount > 2)
-                {
-                    // For longer queries, require at least 2 words to match
-                    return matchCount >= 2;
-                }
+                return true;
             }
 
-            return queryWordsList.All(word => titleWords.Contains(word));
+            var titleWordSet = new HashSet<string>(Regex.Matches(title, @"\b[\w']+\b").Cast<Match>()
+                .Select(m => Encoding.UTF8.GetString(Encoding.GetEncoding("ISO-8859-8").GetBytes(m.Value.ToLowerInvariant())))
+                .Where(w => w.Length > 1 || char.IsDigit(w[0])));
+
+            return queryWords.All(word => titleWordSet.Contains(word));
         }
 
         private static bool IsExactTitleMatch(string normalizedSearch, JObject item)
