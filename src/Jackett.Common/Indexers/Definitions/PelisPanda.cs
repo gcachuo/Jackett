@@ -218,10 +218,10 @@ namespace Jackett.Common.Indexers.Definitions
                                 return releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value;
                             });
                             if (yearMatch != null)
-                                return yearMatch.Title ?? yearMatch.Name;
+                                return await TryFallbackLanguageAsync(tmdbApiKey, englishTitle, year, true, yearMatch.Title ?? yearMatch.Name);
                         }
                         // Return first movie result
-                        return movieJson.Results[0].Title ?? movieJson.Results[0].Name;
+                        return await TryFallbackLanguageAsync(tmdbApiKey, englishTitle, year, true, movieJson.Results[0].Title ?? movieJson.Results[0].Name);
                     }
                 }
 
@@ -249,10 +249,14 @@ namespace Jackett.Common.Indexers.Definitions
                                 return firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value;
                             });
                             // Only return if we found a year match, otherwise return null
-                            return yearMatch != null ? (yearMatch.Title ?? yearMatch.Name) : null;
+                            if (yearMatch != null)
+                            {
+                                return await TryFallbackLanguageAsync(tmdbApiKey, englishTitle, year, false, yearMatch.Title ?? yearMatch.Name);
+                            }
+                            return null;
                         }
                         // If no year specified, return first TV result
-                        return tvJson.Results[0].Title ?? tvJson.Results[0].Name;
+                        return await TryFallbackLanguageAsync(tmdbApiKey, englishTitle, year, false, tvJson.Results[0].Title ?? tvJson.Results[0].Name);
                     }
                 }
 
@@ -263,6 +267,37 @@ namespace Jackett.Common.Indexers.Definitions
                 _logger?.Error($"Error fetching TMDB data: {ex.Message}");
                 return null;
             }
+        }
+
+        private async Task<string> TryFallbackLanguageAsync(string tmdbApiKey, string englishTitle, int? year, bool isMovie, string currentTitle)
+        {
+            if (string.IsNullOrWhiteSpace(currentTitle) || currentTitle.Equals(englishTitle, StringComparison.OrdinalIgnoreCase))
+            {
+                var fallbackUrl = isMovie
+                    ? $"https://api.themoviedb.org/3/search/movie?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-ES"
+                    : $"https://api.themoviedb.org/3/search/tv?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-ES";
+
+                if (year.HasValue)
+                {
+                    fallbackUrl += isMovie ? $"&year={year.Value}" : $"&first_air_date_year={year.Value}";
+                }
+
+                var fallbackResponse = await _webclient.GetResultAsync(new WebRequest(fallbackUrl)).ConfigureAwait(false);
+                if (fallbackResponse.Status == HttpStatusCode.OK)
+                {
+                    var fallbackJson = JsonSerializer.Deserialize<TmdbSearchResponse>(fallbackResponse.ContentString);
+                    if (fallbackJson?.Results != null && fallbackJson.Results.Count > 0)
+                    {
+                        var fallbackTitle = fallbackJson.Results[0].Title ?? fallbackJson.Results[0].Name;
+                        if (!string.IsNullOrWhiteSpace(fallbackTitle))
+                        {
+                            return fallbackTitle;
+                        }
+                    }
+                }
+            }
+
+            return currentTitle;
         }
     }
 

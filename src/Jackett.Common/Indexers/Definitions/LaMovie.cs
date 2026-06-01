@@ -270,36 +270,8 @@ namespace Jackett.Common.Indexers.Definitions
 
                 if (!isLatest)
                 {
-                    // Progressive fallback strategy for Spanish title matching:
-                    // 1. Try full search term
-                    // 2. If no results, try first 2 words
-                    // 3. If still no results, try first word only
-                    // This allows matching English titles against Spanish content using original_title field
-                    var searchTerms = GetProgressiveFallbackTerms(rawSearchTerm);
-
-                    foreach (var term in searchTerms)
-                    {
-                        var searchUrl = string.Format(_searchUrl, postType) + $"&q={Uri.EscapeDataString(term)}";
-                        var response = await RequestWithCookiesAndRetryAsync(
-                            searchUrl, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
-                            headers: _headers);
-
-                        // Check if API returned error
-                        if (response.ContentString.Contains("\"error\":true"))
-                        {
-                            continue; // Try next fallback term
-                        }
-
-                        pageReleases = await ParseReleasesAsync(response, queryForFilters, isLatest, term, rawSearchTermForFilter, searchYear);
-
-                        if (pageReleases.Any())
-                        {
-                            break; // Found results, stop trying
-                        }
-                    }
-
-                    // If no results found with fallback terms, try TMDB translation (only once)
-                    if (!pageReleases.Any() && !tmdbTranslationAttempted)
+                    // Resolve TMDB translation first so the API search can be done in Spanish.
+                    if (!tmdbTranslationAttempted || string.IsNullOrWhiteSpace(tmdbTranslatedTitle))
                     {
                         tmdbTranslationAttempted = true;
 
@@ -330,17 +302,49 @@ namespace Jackett.Common.Indexers.Definitions
                         }
                     }
 
-                    // Use cached TMDB translation if available
-                    if (!pageReleases.Any() && !string.IsNullOrWhiteSpace(tmdbTranslatedTitle))
+                    // Progressive fallback strategy for title matching:
+                    // 1. Try full search term
+                    // 2. If no results, try first 2 words
+                    // 3. If still no results, try first word only
+                    // This allows matching English titles against Spanish content using original_title field
+                    var searchTerms = !string.IsNullOrWhiteSpace(tmdbTranslatedTitle)
+                        ? GetProgressiveFallbackTerms(tmdbTranslatedTitle)
+                        : GetProgressiveFallbackTerms(rawSearchTerm);
+                    if (!string.IsNullOrWhiteSpace(tmdbTranslatedTitle) &&
+                        !tmdbTranslatedTitle.Equals(rawSearchTerm, StringComparison.OrdinalIgnoreCase))
                     {
-                        var searchUrl = string.Format(_searchUrl, postType) + $"&q={Uri.EscapeDataString(tmdbTranslatedTitle)}";
+                        var rawTerms = GetProgressiveFallbackTerms(rawSearchTerm);
+                        foreach (var rawTerm in rawTerms)
+                        {
+                            if (!searchTerms.Any(term => term.Equals(rawTerm, StringComparison.OrdinalIgnoreCase)))
+                            {
+                                searchTerms.Add(rawTerm);
+                            }
+                        }
+                    }
+
+                    foreach (var term in searchTerms)
+                    {
+                        var searchUrl = string.Format(_searchUrl, postType) + $"&q={Uri.EscapeDataString(term)}";
                         var response = await RequestWithCookiesAndRetryAsync(
                             searchUrl, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
                             headers: _headers);
 
-                        if (!response.ContentString.Contains("\"error\":true"))
+                        // Check if API returned error
+                        if (response.ContentString.Contains("\"error\":true"))
                         {
-                            pageReleases = await ParseReleasesAsync(response, queryForFilters, isLatest, tmdbTranslatedTitle, rawSearchTermForFilter, searchYear);
+                            continue; // Try next fallback term
+                        }
+
+                        var originalTermForFilter = !string.IsNullOrWhiteSpace(tmdbTranslatedTitle) &&
+                                                    term.Equals(tmdbTranslatedTitle, StringComparison.OrdinalIgnoreCase)
+                            ? tmdbTranslatedTitle
+                            : rawSearchTermForFilter;
+                        pageReleases = await ParseReleasesAsync(response, queryForFilters, isLatest, term, originalTermForFilter, searchYear);
+
+                        if (pageReleases.Any())
+                        {
+                            break; // Found results, stop trying
                         }
                     }
                 }
@@ -433,9 +437,10 @@ namespace Jackett.Common.Indexers.Definitions
                 {
                     // Match against both Spanish title and original English title
                     // This allows finding content when searching for English titles
-                    var matchesTitle = CheckTitleMatchWords(searchTerm, post.Title, originalSearchTerm);
+                    var effectiveOriginalQuery = allowAlternateStrict ? searchTerm : originalSearchTerm;
+                    var matchesTitle = CheckTitleMatchWords(searchTerm, post.Title, effectiveOriginalQuery);
                     var matchesOriginalTitle = !string.IsNullOrWhiteSpace(post.OriginalTitle) &&
-                                               CheckTitleMatchWords(searchTerm, post.OriginalTitle, originalSearchTerm);
+                                               CheckTitleMatchWords(searchTerm, post.OriginalTitle, effectiveOriginalQuery);
 
                     if (!matchesTitle && !matchesOriginalTitle)
                     {
@@ -596,77 +601,34 @@ namespace Jackett.Common.Indexers.Definitions
             var cacheKey = BuildTmdbCacheKey(englishTitle, year, postType);
             if (TryGetCachedTmdbTranslation(cacheKey, out var cachedResult))
             {
+                if(cachedResult!=null)
                 return cachedResult;
             }
 
             try
             {
                 var isTvSearch = postType == "tvshows" || postType == "animes";
+                var result = await FetchTmdbResultAsync(englishTitle, year, isTvSearch, tmdbApiKey, "es-MX");
 
-                // Use specific endpoints that support year filtering
-                string searchUrl;
-                if (isTvSearch)
+                var spanishTitle = result?.Title ?? result?.Name;
+                if (result == null || string.IsNullOrWhiteSpace(spanishTitle) ||
+                    spanishTitle.Equals(englishTitle, StringComparison.OrdinalIgnoreCase))
                 {
-                    // Use TV endpoint with first_air_date_year
-                    searchUrl = $"https://api.themoviedb.org/3/search/tv?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
-                    if (year.HasValue)
-                        searchUrl += $"&first_air_date_year={year.Value}";
-                }
-                else
-                {
-                    // Use movie endpoint with year
-                    searchUrl = $"https://api.themoviedb.org/3/search/movie?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
-                    if (year.HasValue)
-                        searchUrl += $"&year={year.Value}";
+                    var fallbackResult = await FetchTmdbResultAsync(englishTitle, year, isTvSearch, tmdbApiKey, "es-ES");
+                    if (fallbackResult != null)
+                    {
+                        result = fallbackResult;
+                        spanishTitle = result.Title ?? result.Name;
+                    }
                 }
 
-                var response = await RequestWithCookiesAsync(searchUrl);
-                if (response.Status != System.Net.HttpStatusCode.OK)
-                {
-                    return null;
-                }
-
-                var json = JsonSerializer.Deserialize<TmdbSearchResponse>(response.ContentString);
-                if (json?.Results == null || json.Results.Count == 0)
+                if (result == null || string.IsNullOrWhiteSpace(spanishTitle))
                 {
                     CacheTmdbTranslation(cacheKey, null, null);
                     return null;
                 }
 
-                // If year is specified, ONLY return results that match the year
-                TmdbResult result = null;
-                if (year.HasValue)
-                {
-                    result = json.Results.FirstOrDefault(r =>
-                    {
-                        if (isTvSearch)
-                        {
-                            var firstAirYear = r.FirstAirDate?.Substring(0, 4);
-                            return firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value;
-                        }
-                        else
-                        {
-                            var releaseYear = r.ReleaseDate?.Substring(0, 4);
-                            return releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value;
-                        }
-                    });
-
-                    // If year specified but no match found, return null instead of wrong result
-                    if (result == null)
-                    {
-                        CacheTmdbTranslation(cacheKey, null, null);
-                        return null;
-                    }
-                }
-                else
-                {
-                    // No year specified, use first result
-                    result = json.Results[0];
-                }
-
-                var spanishTitle = result.Title ?? result.Name;
                 var tmdbYear = ExtractTmdbResultYear(result);
-
                 CacheTmdbTranslation(cacheKey, spanishTitle, tmdbYear);
                 return new TmdbTranslationResult { Title = spanishTitle, Year = tmdbYear };
             }
@@ -675,6 +637,56 @@ namespace Jackett.Common.Indexers.Definitions
                 logger.Error($"Error fetching TMDB data: {ex.Message}");
                 return null;
             }
+        }
+
+        private async Task<TmdbResult> FetchTmdbResultAsync(string englishTitle, int? year, bool isTvSearch, string tmdbApiKey, string language)
+        {
+            string searchUrl;
+            if (isTvSearch)
+            {
+                searchUrl = $"https://api.themoviedb.org/3/search/tv?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language={language}";
+                if (year.HasValue)
+                {
+                    searchUrl += $"&first_air_date_year={year.Value}";
+                }
+            }
+            else
+            {
+                searchUrl = $"https://api.themoviedb.org/3/search/movie?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language={language}";
+                if (year.HasValue)
+                {
+                    searchUrl += $"&year={year.Value}";
+                }
+            }
+
+            var response = await RequestWithCookiesAsync(searchUrl);
+            if (response.Status != System.Net.HttpStatusCode.OK)
+            {
+                return null;
+            }
+
+            var json = JsonSerializer.Deserialize<TmdbSearchResponse>(response.ContentString);
+            if (json?.Results == null || json.Results.Count == 0)
+            {
+                return null;
+            }
+
+            if (year.HasValue)
+            {
+                return json.Results.FirstOrDefault(r =>
+                {
+                    if (isTvSearch)
+                    {
+                        var firstAirYear = r.FirstAirDate?.Substring(0, 4);
+                        return firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value;
+                    }
+
+                    var releaseYear = r.ReleaseDate?.Substring(0, 4);
+                    return releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value;
+                });
+            }
+
+            return json.Results[0];
         }
 
         private static int? ExtractTmdbResultYear(TmdbResult result)
