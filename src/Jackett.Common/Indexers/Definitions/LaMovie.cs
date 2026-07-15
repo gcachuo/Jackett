@@ -671,22 +671,71 @@ namespace Jackett.Common.Indexers.Definitions
                 return null;
             }
 
+            var candidates = json.Results.AsEnumerable();
             if (year.HasValue)
             {
-                return json.Results.FirstOrDefault(r =>
+                var yearFilter = year.Value;
+                candidates = candidates.Where(r =>
                 {
                     if (isTvSearch)
                     {
                         var firstAirYear = r.FirstAirDate?.Substring(0, 4);
-                        return firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value;
+                        return firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == yearFilter;
                     }
 
                     var releaseYear = r.ReleaseDate?.Substring(0, 4);
-                    return releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value;
+                    return releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == yearFilter;
                 });
             }
 
-            return json.Results[0];
+            return candidates
+                .OrderByDescending(r => GetTmdbResultRelevance(r, englishTitle))
+                .FirstOrDefault()
+                ?? json.Results[0];
+        }
+
+        private static int GetTmdbResultRelevance(TmdbResult result, string englishTitle)
+        {
+            if (result == null)
+            {
+                return -1;
+            }
+
+            var original = result.OriginalTitle ?? result.OriginalName;
+            var localized = result.Title ?? result.Name;
+
+            var normalizedQuery = NormalizeForComparison(englishTitle);
+            var queryWords = normalizedQuery.Split(' ').Where(w => w.Length > 2).ToList();
+            if (queryWords.Count == 0)
+            {
+                queryWords = normalizedQuery.Split(' ').ToList();
+            }
+
+            var originalNormalized = NormalizeForComparison(original ?? string.Empty);
+            var localizedNormalized = NormalizeForComparison(localized ?? string.Empty);
+
+            var matchesOriginal = queryWords.Count(w => originalNormalized.Contains(w));
+            var matchesLocalized = queryWords.Count(w => localizedNormalized.Contains(w));
+
+            var score = 0;
+            if (originalNormalized == normalizedQuery || localizedNormalized == normalizedQuery)
+            {
+                score += 100;
+            }
+
+            score += matchesOriginal * 10;
+            score += matchesLocalized * 5;
+            return score;
+        }
+
+        private static string NormalizeForComparison(string input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                return string.Empty;
+            }
+
+            return Regex.Replace(input.ToLowerInvariant(), "[^a-z0-9 ]+", " ").Trim();
         }
 
         private static int? ExtractTmdbResultYear(TmdbResult result)
@@ -1266,6 +1315,12 @@ namespace Jackett.Common.Indexers.Definitions
 
             [JsonPropertyName("name")]
             public string Name { get; set; }
+
+            [JsonPropertyName("original_title")]
+            public string OriginalTitle { get; set; }
+
+            [JsonPropertyName("original_name")]
+            public string OriginalName { get; set; }
 
             [JsonPropertyName("release_date")]
             public string ReleaseDate { get; set; }

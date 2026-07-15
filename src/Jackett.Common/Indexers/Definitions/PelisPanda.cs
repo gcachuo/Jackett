@@ -125,7 +125,7 @@ namespace Jackett.Common.Indexers.Definitions
             }
 
             // Try TMDB translation as fallback
-            var tmdbTranslated = GetSpanishTitleFromTmdbAsync(term, searchYear).GetAwaiter().GetResult();
+            var tmdbTranslated = GetSpanishTitleFromTmdbAsync(term, searchYear, query).GetAwaiter().GetResult();
             if (!string.IsNullOrWhiteSpace(tmdbTranslated) && !tmdbTranslated.Equals(term, StringComparison.OrdinalIgnoreCase))
             {
                 var yearInfo = searchYear.HasValue ? $" ({searchYear.Value})" : "";
@@ -186,81 +186,56 @@ namespace Jackett.Common.Indexers.Definitions
             return terms.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         }
 
-        private async Task<string> GetSpanishTitleFromTmdbAsync(string englishTitle, int? year)
+        private async Task<string> GetSpanishTitleFromTmdbAsync(string englishTitle, int? year, TorznabQuery query)
         {
             var tmdbApiKey = ((ConfigurationData.StringConfigurationItem)_configData.GetDynamic("TmdbApiKey"))?.Value;
             if (string.IsNullOrWhiteSpace(tmdbApiKey))
                 return null;
 
+            var isTvSearch = query.IsTVSearch || query.Season > 0 || !string.IsNullOrWhiteSpace(query.Episode);
+            var isMovieSearch = query.IsMovieSearch;
+            var isGenericSearch = !isTvSearch && !isMovieSearch;
+
             try
             {
-                // Try movie search first (more common for PelisPanda)
-                var movieUrl = $"https://api.themoviedb.org/3/search/movie?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
-                if (year.HasValue)
-                    movieUrl += $"&year={year.Value}";
+                TmdbResult movieResult = null;
+                TmdbResult tvResult = null;
 
-                _logger?.Debug($"TMDB movie search: query='{englishTitle}', year={year?.ToString() ?? "null"}");
-
-                var movieRequest = new WebRequest(movieUrl);
-                var movieResponse = await _webclient.GetResultAsync(movieRequest).ConfigureAwait(false);
-
-                if (movieResponse.Status == HttpStatusCode.OK)
+                if (isMovieSearch || isGenericSearch)
                 {
-                    var movieJson = JsonSerializer.Deserialize<TmdbSearchResponse>(movieResponse.ContentString);
-                    if (movieJson?.Results != null && movieJson.Results.Count > 0)
-                    {
-                        // If year is specified, prefer exact year match
-                        if (year.HasValue)
-                        {
-                            var yearMatch = movieJson.Results.FirstOrDefault(r =>
-                            {
-                                var releaseYear = r.ReleaseDate?.Substring(0, 4);
-                                return releaseYear != null && int.TryParse(releaseYear, out var ry) && ry == year.Value;
-                            });
-                            if (yearMatch != null)
-                                return await TryFallbackLanguageAsync(tmdbApiKey, englishTitle, year, true, yearMatch.Title ?? yearMatch.Name);
-                        }
-                        // Return first movie result
-                        return await TryFallbackLanguageAsync(tmdbApiKey, englishTitle, year, true, movieJson.Results[0].Title ?? movieJson.Results[0].Name);
-                    }
+                    movieResult = await SearchTmdbAsync(tmdbApiKey, englishTitle, year, true).ConfigureAwait(false);
                 }
 
-                // Try TV search if no movie results
-                var tvUrl = $"https://api.themoviedb.org/3/search/tv?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
-                if (year.HasValue)
-                    tvUrl += $"&first_air_date_year={year.Value}";
-
-                _logger?.Debug($"TMDB TV search: query='{englishTitle}', year={year?.ToString() ?? "null"}");
-
-                var tvRequest = new WebRequest(tvUrl);
-                var tvResponse = await _webclient.GetResultAsync(tvRequest).ConfigureAwait(false);
-
-                if (tvResponse.Status == HttpStatusCode.OK)
+                if (isTvSearch || isGenericSearch)
                 {
-                    var tvJson = JsonSerializer.Deserialize<TmdbSearchResponse>(tvResponse.ContentString);
-                    if (tvJson?.Results != null && tvJson.Results.Count > 0)
-                    {
-                        // If year is specified, ONLY return results that match the year
-                        if (year.HasValue)
-                        {
-                            var yearMatch = tvJson.Results.FirstOrDefault(r =>
-                            {
-                                var firstAirYear = r.FirstAirDate?.Substring(0, 4);
-                                return firstAirYear != null && int.TryParse(firstAirYear, out var fay) && fay == year.Value;
-                            });
-                            // Only return if we found a year match, otherwise return null
-                            if (yearMatch != null)
-                            {
-                                return await TryFallbackLanguageAsync(tmdbApiKey, englishTitle, year, false, yearMatch.Title ?? yearMatch.Name);
-                            }
-                            return null;
-                        }
-                        // If no year specified, return first TV result
-                        return await TryFallbackLanguageAsync(tmdbApiKey, englishTitle, year, false, tvJson.Results[0].Title ?? tvJson.Results[0].Name);
-                    }
+                    tvResult = await SearchTmdbAsync(tmdbApiKey, englishTitle, year, false).ConfigureAwait(false);
                 }
 
-                return null;
+                // Prefer a TV result when the query is TV-specific, otherwise prefer the most relevant match.
+                TmdbResult selectedResult;
+                if (isTvSearch)
+                {
+                    selectedResult = tvResult;
+                }
+                else if (isMovieSearch)
+                {
+                    selectedResult = movieResult;
+                }
+                else
+                {
+                    var movieRelevance = GetTmdbResultRelevance(movieResult, englishTitle);
+                    var tvRelevance = GetTmdbResultRelevance(tvResult, englishTitle);
+                    selectedResult = tvRelevance >= movieRelevance ? tvResult : movieResult;
+                }
+
+                if (selectedResult == null)
+                {
+                    return null;
+                }
+
+                var isMovie = movieResult == selectedResult;
+                var spanishTitle = selectedResult.Title ?? selectedResult.Name;
+                return await TryFallbackLanguageAsync(tmdbApiKey, englishTitle, year, isMovie, spanishTitle).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -269,13 +244,99 @@ namespace Jackett.Common.Indexers.Definitions
             }
         }
 
+        private async Task<TmdbResult> SearchTmdbAsync(string tmdbApiKey, string englishTitle, int? year, bool isMovie)
+        {
+            var endpoint = isMovie ? "movie" : "tv";
+            var url = $"https://api.themoviedb.org/3/search/{endpoint}?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-MX";
+            if (year.HasValue)
+            {
+                url += isMovie ? $"&year={year.Value}" : $"&first_air_date_year={year.Value}";
+            }
+
+            _logger?.Debug($"TMDB {endpoint} search: query='{englishTitle}', year={year?.ToString() ?? "null"}");
+
+            var response = await _webclient.GetResultAsync(new WebRequest(url)).ConfigureAwait(false);
+            if (response.Status != HttpStatusCode.OK)
+            {
+                return null;
+            }
+
+            var json = JsonSerializer.Deserialize<TmdbSearchResponse>(response.ContentString);
+            if (json?.Results == null || json.Results.Count == 0)
+            {
+                return null;
+            }
+
+            var candidates = json.Results.AsEnumerable();
+            if (year.HasValue)
+            {
+                var yearFilter = year.Value;
+                candidates = candidates.Where(r =>
+                {
+                    var date = isMovie ? r.ReleaseDate : r.FirstAirDate;
+                    var resultYear = date?.Substring(0, 4);
+                    return resultYear != null && int.TryParse(resultYear, out var ry) && ry == yearFilter;
+                });
+            }
+
+            // Return the most relevant candidate, otherwise fall back to the first result.
+            return candidates
+                .OrderByDescending(r => GetTmdbResultRelevance(r, englishTitle))
+                .FirstOrDefault()
+                ?? json.Results[0];
+        }
+
+        private static int GetTmdbResultRelevance(TmdbResult result, string englishTitle)
+        {
+            if (result == null)
+            {
+                return -1;
+            }
+
+            var original = result.OriginalTitle ?? result.OriginalName;
+            var localized = result.Title ?? result.Name;
+
+            var normalizedQuery = NormalizeForComparison(englishTitle);
+            var queryWords = normalizedQuery.Split(' ').Where(w => w.Length > 2).ToList();
+            if (queryWords.Count == 0)
+            {
+                queryWords = normalizedQuery.Split(' ').ToList();
+            }
+
+            var originalNormalized = NormalizeForComparison(original ?? string.Empty);
+            var localizedNormalized = NormalizeForComparison(localized ?? string.Empty);
+
+            var matchesOriginal = queryWords.Count(w => originalNormalized.Contains(w));
+            var matchesLocalized = queryWords.Count(w => localizedNormalized.Contains(w));
+
+            // Prefer exact title matches, then high word overlap on original title, then localized title.
+            var score = 0;
+            if (originalNormalized == normalizedQuery || localizedNormalized == normalizedQuery)
+            {
+                score += 100;
+            }
+
+            score += matchesOriginal * 10;
+            score += matchesLocalized * 5;
+            return score;
+        }
+
+        private static string NormalizeForComparison(string input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                return string.Empty;
+            }
+
+            return Regex.Replace(input.ToLowerInvariant(), "[^a-z0-9 ]+", " ").Trim();
+        }
+
         private async Task<string> TryFallbackLanguageAsync(string tmdbApiKey, string englishTitle, int? year, bool isMovie, string currentTitle)
         {
             if (string.IsNullOrWhiteSpace(currentTitle) || currentTitle.Equals(englishTitle, StringComparison.OrdinalIgnoreCase))
             {
-                var fallbackUrl = isMovie
-                    ? $"https://api.themoviedb.org/3/search/movie?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-ES"
-                    : $"https://api.themoviedb.org/3/search/tv?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-ES";
+                var endpoint = isMovie ? "movie" : "tv";
+                var fallbackUrl = $"https://api.themoviedb.org/3/search/{endpoint}?api_key={tmdbApiKey}&query={Uri.EscapeDataString(englishTitle)}&language=es-ES";
 
                 if (year.HasValue)
                 {
@@ -861,6 +922,12 @@ namespace Jackett.Common.Indexers.Definitions
 
         [JsonPropertyName("name")]
         public string Name { get; set; }
+
+        [JsonPropertyName("original_title")]
+        public string OriginalTitle { get; set; }
+
+        [JsonPropertyName("original_name")]
+        public string OriginalName { get; set; }
 
         [JsonPropertyName("release_date")]
         public string ReleaseDate { get; set; }

@@ -187,7 +187,9 @@ namespace Jackett.Common.Indexers.Definitions
             }
 
             // If no results found with fallback terms, try TMDB translation
-            if (!releases.Any() && isSearch)
+            // Cinecalidad is movies only, so skip TV-specific queries.
+            var isTvQuery = query.Season > 0 || !string.IsNullOrWhiteSpace(query.Episode) || query.IsTVSearch;
+            if (!releases.Any() && isSearch && !isTvQuery)
             {
                 var originalSearchTerm = query.GetQueryString();
                 if (!string.IsNullOrWhiteSpace(originalSearchTerm))
