@@ -630,6 +630,17 @@ namespace Jackett.Common.Indexers.Definitions
                     return null;
                 }
 
+                // TMDB falls back to the original title when there is no Spanish
+                // localization; using it would just search the site for a
+                // foreign-language title (e.g. the Italian 'Simba - È nato un re')
+                var tmdbOriginalTitle = result.OriginalTitle ?? result.OriginalName;
+                if (!string.IsNullOrWhiteSpace(tmdbOriginalTitle) &&
+                    spanishTitle.Equals(tmdbOriginalTitle, StringComparison.OrdinalIgnoreCase))
+                {
+                    CacheTmdbTranslation(cacheKey, null, null);
+                    return null;
+                }
+
                 var tmdbYear = ExtractTmdbResultYear(result);
                 CacheTmdbTranslation(cacheKey, spanishTitle, tmdbYear);
                 return new TmdbTranslationResult { Title = spanishTitle, Year = tmdbYear };
