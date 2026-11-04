@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Jackett.Common.Helpers;
 using Jackett.Common.Models;
@@ -414,6 +415,7 @@ namespace Jackett.Common.Indexers.Definitions
                     .ToList();
             }
 
+            var filteredPosts = new List<Post>();
             foreach (var post in posts)
             {
                 if (post.Images?.Poster == null || post.Images?.Backdrop == null || post.Images?.Logo == null)
@@ -484,6 +486,32 @@ namespace Jackett.Common.Indexers.Definitions
                     }
                 }
 
+                filteredPosts.Add(post);
+            }
+
+            // Fetch download URLs in parallel (bounded) so the per-post
+            // details/player API calls don't run sequentially
+            var postsToProcess = hasEpisodeRequest ? filteredPosts.Take(maxShowsToProcess).ToList() : filteredPosts;
+            var downloadsByPost = new ConcurrentDictionary<Post, List<Download>>();
+            using (var semaphore = new SemaphoreSlim(4))
+            {
+                await Task.WhenAll(postsToProcess.Select(async post =>
+                {
+                    var link = new Uri(string.Format(_detailsUrl, post.Type) + $"&slug={post.Slug}");
+                    await semaphore.WaitAsync();
+                    try
+                    {
+                        downloadsByPost[post] = await GetDownloadUrlsAsync(link, post.Type, isLatest, query);
+                    }
+                    finally
+                    {
+                        semaphore.Release();
+                    }
+                }));
+            }
+
+            foreach (var post in postsToProcess)
+            {
                 var year = post.ReleaseDate?.Split('-')[0];
                 var slugType = post.Type switch
                 {
@@ -495,7 +523,7 @@ namespace Jackett.Common.Indexers.Definitions
                 var details = new Uri($"{SiteLink}{slugType}{post.Slug}");
                 var detailsUrl = string.Format(_detailsUrl, post.Type) + $"&slug={post.Slug}";
                 var link = new Uri(detailsUrl);
-                var downloadUrls = await GetDownloadUrlsAsync(link, post.Type, isLatest, query);
+                var downloadUrls = downloadsByPost.TryGetValue(post, out var postDownloads) ? postDownloads : new List<Download>();
 
                 showsProcessed++;
 
