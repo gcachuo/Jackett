@@ -79,7 +79,7 @@ namespace Jackett.Common.Indexers.Definitions
             {
                 MovieSearchParams = new List<MovieSearchParam>
                 {
-                    MovieSearchParam.Q
+                    MovieSearchParam.Q, MovieSearchParam.Year
                 }
             };
 
@@ -106,7 +106,7 @@ namespace Jackett.Common.Indexers.Definitions
             var releases = new List<ReleaseInfo>();
 
             var searchTerm = query.GetQueryString();
-            int? searchYear = null;
+            var searchYear = query.Year;
 
             // Extract year from search term if present
             if (!string.IsNullOrWhiteSpace(searchTerm))
@@ -114,7 +114,7 @@ namespace Jackett.Common.Indexers.Definitions
                 var yearMatch = Regex.Match(searchTerm, @"\b(19\d{2}|20\d{2})\b");
                 if (yearMatch.Success)
                 {
-                    searchYear = int.Parse(yearMatch.Value);
+                    searchYear ??= int.Parse(yearMatch.Value);
                     // Remove year from search term
                     searchTerm = searchTerm.Replace(yearMatch.Value, "").Trim();
                 }
@@ -144,6 +144,7 @@ namespace Jackett.Common.Indexers.Definitions
                 }
             }
 
+            var tmdbYearCache = new Dictionary<string, long?>(StringComparer.OrdinalIgnoreCase);
             var lastPublishDate = DateTime.Now;
 
             foreach (var currentSearchTerm in searchTerms.Any() ? searchTerms : new List<string> { "" })
@@ -162,7 +163,7 @@ namespace Jackett.Common.Indexers.Definitions
                     var pageParam = page > 1 ? $"page/{page}/" : string.Empty;
                     var searchUrl = string.Format(currentTemplateUrl, pageParam);
                     var response = await RequestWithCookiesAndRetryAsync(searchUrl);
-                    var pageReleases = await ParseReleases(response, query, searchYear, searchTerm);
+                    var pageReleases = await ParseReleases(response, query, searchYear, searchTerm, tmdbYearCache);
 
                     // publish date is not available in the torrent list, but we add a relative date so we can sort
                     foreach (var release in pageReleases)
@@ -215,7 +216,7 @@ namespace Jackett.Common.Indexers.Definitions
                             var pageParam = page > 1 ? $"page/{page}/" : string.Empty;
                             var searchUrl = string.Format(currentTemplateUrl, pageParam);
                             var response = await RequestWithCookiesAndRetryAsync(searchUrl);
-                            var pageReleases = await ParseReleases(response, query, searchYear, spanishTitle);
+                            var pageReleases = await ParseReleases(response, query, searchYear, spanishTitle, tmdbYearCache);
 
                             foreach (var release in pageReleases)
                             {
@@ -319,7 +320,8 @@ namespace Jackett.Common.Indexers.Definitions
             return null;
         }
 
-        private async Task<List<ReleaseInfo>> ParseReleases(WebResult response, TorznabQuery query, int? searchYear, string searchTerm)
+        private async Task<List<ReleaseInfo>> ParseReleases(WebResult response, TorznabQuery query, int? searchYear, string searchTerm,
+                                                            Dictionary<string, long?> tmdbYearCache)
         {
             var releases = new List<ReleaseInfo>();
 
@@ -551,6 +553,16 @@ namespace Jackett.Common.Indexers.Definitions
                     if (!year.IsNullOrWhiteSpace() && long.TryParse(year, out var parsedYear))
                     {
                         yearNumber = parsedYear;
+                    }
+
+                    // Fallback: fetch year from TMDB when the site doesn't expose it (older catalog titles)
+                    if (!yearNumber.HasValue)
+                    {
+                        yearNumber = await GetYearFromTmdb(title, tmdbYearCache);
+                        if (yearNumber.HasValue)
+                        {
+                            year = yearNumber.Value.ToString();
+                        }
                     }
 
                     var titleWithYear = title;
@@ -804,6 +816,45 @@ namespace Jackett.Common.Indexers.Definitions
                 logger.Error($"Error fetching TMDB data: {ex.Message}");
                 return null;
             }
+        }
+
+        private async Task<long?> GetYearFromTmdb(string title, Dictionary<string, long?> cache)
+        {
+            if (cache.TryGetValue(title, out var cached))
+            {
+                return cached;
+            }
+
+            var tmdbApiKey = ((StringConfigurationItem)configData.GetDynamic("TmdbApiKey")).Value;
+            if (string.IsNullOrWhiteSpace(tmdbApiKey))
+            {
+                cache[title] = null;
+                return null;
+            }
+
+            long? year = null;
+            try
+            {
+                var searchUrl = $"https://api.themoviedb.org/3/search/movie?api_key={tmdbApiKey}&query={Uri.EscapeDataString(title)}&language=es-MX";
+                var response = await RequestWithCookiesAsync(searchUrl);
+                if (response.Status == System.Net.HttpStatusCode.OK)
+                {
+                    var json = JsonSerializer.Deserialize<TmdbSearchResponse>(response.ContentString);
+                    var releaseDate = json?.Results?.FirstOrDefault()?.ReleaseDate;
+                    if (!releaseDate.IsNullOrWhiteSpace() && releaseDate.Length >= 4 &&
+                        long.TryParse(releaseDate.Substring(0, 4), out var parsedYear))
+                    {
+                        year = parsedYear;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.Error($"Error fetching TMDB year for '{title}': {ex.Message}");
+            }
+
+            cache[title] = year;
+            return year;
         }
 
         // TODO: merge this method with query.MatchQueryStringAND
