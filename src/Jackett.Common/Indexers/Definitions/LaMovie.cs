@@ -294,7 +294,10 @@ namespace Jackett.Common.Indexers.Definitions
                         if (!string.IsNullOrWhiteSpace(tmdbTranslatedTitle))
                         {
                             logger.Info($"TMDB translated '{rawSearchTerm}' to '{tmdbTranslatedTitle}'");
-                            if (!searchYear.HasValue && tmdbMatchedYear.HasValue)
+                            // Only adopt the TMDB year when the translation actually changed the title;
+                            // an identical title may be a different movie and its year would poison the filter
+                            if (!searchYear.HasValue && tmdbMatchedYear.HasValue &&
+                                !tmdbTranslatedTitle.Equals(rawSearchTerm, StringComparison.OrdinalIgnoreCase))
                             {
                                 searchYear = tmdbMatchedYear;
                                 rawSearchTermForFilter = $"{rawSearchTermForFilter} {searchYear.Value}".Trim();
