@@ -610,8 +610,11 @@ namespace Jackett.Common.Indexers.Definitions
                 var result = await FetchTmdbResultAsync(englishTitle, year, isTvSearch, tmdbApiKey, "es-MX");
 
                 var spanishTitle = result?.Title ?? result?.Name;
+                // Also retry es-ES when the es-MX title is just the original title,
+                // i.e. TMDB has no Latin American localization for it
                 if (result == null || string.IsNullOrWhiteSpace(spanishTitle) ||
-                    spanishTitle.Equals(englishTitle, StringComparison.OrdinalIgnoreCase))
+                    spanishTitle.Equals(englishTitle, StringComparison.OrdinalIgnoreCase) ||
+                    spanishTitle.Equals(result.OriginalTitle, StringComparison.OrdinalIgnoreCase))
                 {
                     var fallbackResult = await FetchTmdbResultAsync(englishTitle, year, isTvSearch, tmdbApiKey, "es-ES");
                     if (fallbackResult != null)
@@ -723,7 +726,14 @@ namespace Jackett.Common.Indexers.Definitions
             }
 
             score += matchesOriginal * 10;
-            score += matchesLocalized * 5;
+            // Only count localized matches when the title is actually localized;
+            // otherwise unlocalized results (title == original_title) would be
+            // favored over the correctly localized one
+            if (localizedNormalized != originalNormalized)
+            {
+                score += matchesLocalized * 5;
+            }
+
             return score;
         }
 
