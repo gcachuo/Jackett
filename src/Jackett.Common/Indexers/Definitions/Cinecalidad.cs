@@ -290,10 +290,19 @@ namespace Jackett.Common.Indexers.Definitions
 
                 if (protectedLink.IsNullOrWhiteSpace())
                 {
-                    throw new Exception($"Invalid download link for {link}");
+                    // The site has no torrent links for this title (stream-only entry)
+                    throw new Exception($"No download links available for {link}");
                 }
 
-                protectedLink = Base64Decode(protectedLink);
+                try
+                {
+                    protectedLink = Base64Decode(protectedLink);
+                }
+                catch (FormatException)
+                {
+                    // data-url is not a real protected link — same as no downloads
+                    throw new Exception($"No download links available for {link}");
+                }
                 // turn
                 // link=https://cinecalidad.dev/pelicula/la-chica-salvaje/
                 // and
@@ -311,6 +320,12 @@ namespace Jackett.Common.Indexers.Definitions
                 var magnetUrlFromProtectedPage = document.QuerySelector("a[href^=magnet]").GetAttribute("href");
 
                 return await base.Download(new Uri(magnetUrlFromProtectedPage));
+            }
+            catch (Exception ex) when (ex.Message.StartsWith("No download links available"))
+            {
+                // Expected case: the site offers no torrents for this title; skip the
+                // full-page OnParseError dump and surface a clean one-line error
+                throw;
             }
             catch (Exception ex)
             {
