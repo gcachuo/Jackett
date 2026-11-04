@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
@@ -6,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using AngleSharp.Html.Parser;
 using Jackett.Common.Extensions;
@@ -346,7 +348,7 @@ namespace Jackett.Common.Indexers.Definitions
                 using var dom = parser.ParseDocument(response.ContentString);
 
                 var isSearch = !string.IsNullOrWhiteSpace(query.GetQueryString());
-                var detailsMagnetAvailabilityCache = new Dictionary<string, (bool HasHd, bool Has4K)>(StringComparer.OrdinalIgnoreCase);
+                var detailsMagnetAvailabilityCache = new ConcurrentDictionary<string, (bool HasHd, bool Has4K)>(StringComparer.OrdinalIgnoreCase);
 
                 async Task<(bool HasHd, bool Has4K)> GetMagnetAvailabilityFromDetailsAsync(string detailsUrl)
                 {
@@ -364,8 +366,9 @@ namespace Jackett.Common.Indexers.Definitions
 
                     try
                     {
+                        var detailsParser = new HtmlParser();
                         var detailsResponse = await RequestWithCookiesAndRetryAsync(detailsUrl);
-                        using var detailsDom = await parser.ParseDocumentAsync(detailsResponse.ContentString);
+                        using var detailsDom = await detailsParser.ParseDocumentAsync(detailsResponse.ContentString);
 
                         async Task<bool> LinkResolvesToMagnetAsync(string href)
                         {
@@ -403,7 +406,7 @@ namespace Jackett.Common.Indexers.Definitions
                                     return true;
                                 }
 
-                                using var dlDom = parser.ParseDocument(dlResult.ContentString);
+                                using var dlDom = detailsParser.ParseDocument(dlResult.ContentString);
                                 var magnet = dlDom.QuerySelector("a.link[data-href^='magnet:']")?.GetAttribute("data-href") ??
                                              dlDom.QuerySelector("a[href^='magnet:']")?.GetAttribute("href");
 
@@ -492,6 +495,9 @@ namespace Jackett.Common.Indexers.Definitions
 
                 // Get all movie items - updated selector to match the actual structure
                 var movieItems = dom.QuerySelectorAll("article, div[class*='post-']");
+
+                var parsedItems = new List<(Uri Link, Uri Poster, string Title1080p, string Title2160p, List<string> Genres,
+                                            string Description, long? YearNumber, string DetailsUrl, bool Heuristic4K)>();
 
                 foreach (var item in movieItems)
                 {
@@ -683,20 +689,65 @@ namespace Jackett.Common.Indexers.Definitions
 
                     detailsUrl = GetAbsoluteUrl(detailsUrl);
 
+                    Uri link;
+                    Uri poster;
                     try
                     {
-                        var poster = !string.IsNullOrEmpty(posterUrl)
+                        poster = !string.IsNullOrEmpty(posterUrl)
                             ? new Uri(GetAbsoluteUrl(posterUrl))
                             : null;
-                        var link = new Uri(detailsUrl);
+                        link = new Uri(detailsUrl);
+                    }
+                    catch (Exception)
+                    {
+                        // Skip this item if there's an error with URL parsing
+                        continue;
+                    }
 
+                    var heuristic4K = item.TextContent.IndexOf("4K", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                      item.TextContent.IndexOf("2160p", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                      (!qualityBadge.IsNullOrWhiteSpace() &&
+                                       Regex.IsMatch(qualityBadge, @"\b(4k|uhd|2160)\b", RegexOptions.IgnoreCase));
+
+                    parsedItems.Add((link, poster, title1080p, title2160p, genres, description, yearNumber, detailsUrl, heuristic4K));
+                }
+
+                // Prefetch magnet availability in parallel (bounded) so per-item
+                // details-page probes don't run sequentially
+                if (isSearch && parsedItems.Count > 0)
+                {
+                    using var semaphore = new SemaphoreSlim(4);
+                    await Task.WhenAll(parsedItems.Select(async it =>
+                    {
+                        await semaphore.WaitAsync();
+                        try
+                        {
+                            var availability = await GetMagnetAvailabilityFromDetailsAsync(it.DetailsUrl);
+                        }
+                        finally
+                        {
+                            semaphore.Release();
+                        }
+                    }));
+                }
+
+                foreach (var it in parsedItems)
+                {
+                    var link = it.Link;
+                    var poster = it.Poster;
+                    var genres = it.Genres;
+                    var description = it.Description;
+                    var yearNumber = it.YearNumber;
+                    var detailsUrl = it.DetailsUrl;
+                    var title1080p = it.Title1080p;
+                    var title2160p = it.Title2160p;
+
+                    try
+                    {
                         // Check availability (only magnets) when searching; heuristic otherwise.
                         var magnetsAvailability = isSearch
                             ? await GetMagnetAvailabilityFromDetailsAsync(detailsUrl)
-                            : (HasHd: true,
-                               Has4K: (item.TextContent.IndexOf("4K", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                       item.TextContent.IndexOf("2160p", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                       (!qualityBadge.IsNullOrWhiteSpace() && Regex.IsMatch(qualityBadge, @"\b(4k|uhd|2160)\b", RegexOptions.IgnoreCase))));
+                            : (HasHd: true, Has4K: it.Heuristic4K);
 
                         var is4K = magnetsAvailability.Has4K;
 
