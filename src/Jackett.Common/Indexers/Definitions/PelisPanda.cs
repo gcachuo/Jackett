@@ -235,7 +235,19 @@ namespace Jackett.Common.Indexers.Definitions
 
                 var isMovie = movieResult == selectedResult;
                 var spanishTitle = selectedResult.Title ?? selectedResult.Name;
-                return await TryFallbackLanguageAsync(tmdbApiKey, englishTitle, year, isMovie, spanishTitle).ConfigureAwait(false);
+                var title = await TryFallbackLanguageAsync(tmdbApiKey, englishTitle, year, isMovie, spanishTitle).ConfigureAwait(false);
+
+                // TMDB falls back to the original title when there is no Spanish
+                // localization; using it would just search the site for a
+                // foreign-language title (e.g. the Italian 'Simba - È nato un re')
+                var tmdbOriginalTitle = selectedResult.OriginalTitle ?? selectedResult.OriginalName;
+                if (!string.IsNullOrWhiteSpace(title) && !string.IsNullOrWhiteSpace(tmdbOriginalTitle) &&
+                    title.Equals(tmdbOriginalTitle, StringComparison.OrdinalIgnoreCase))
+                {
+                    return null;
+                }
+
+                return title;
             }
             catch (Exception ex)
             {
