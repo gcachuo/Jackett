@@ -809,7 +809,19 @@ namespace Jackett.Common.Indexers.Definitions
                     result = json.Results[0];
                 }
 
-                return result.Title ?? result.Name;
+                var spanishTitle = result.Title ?? result.Name;
+
+                // TMDB falls back to the original title when there is no Spanish
+                // localization; using it would just search the site for a
+                // foreign-language title (e.g. the Italian 'Simba - È nato un re')
+                var tmdbOriginalTitle = result.OriginalTitle ?? result.OriginalName;
+                if (!string.IsNullOrWhiteSpace(spanishTitle) && !string.IsNullOrWhiteSpace(tmdbOriginalTitle) &&
+                    spanishTitle.Equals(tmdbOriginalTitle, StringComparison.OrdinalIgnoreCase))
+                {
+                    return null;
+                }
+
+                return spanishTitle;
             }
             catch (Exception ex)
             {
@@ -943,6 +955,12 @@ namespace Jackett.Common.Indexers.Definitions
 
             [JsonPropertyName("name")]
             public string Name { get; set; }
+
+            [JsonPropertyName("original_title")]
+            public string OriginalTitle { get; set; }
+
+            [JsonPropertyName("original_name")]
+            public string OriginalName { get; set; }
 
             [JsonPropertyName("release_date")]
             public string ReleaseDate { get; set; }
