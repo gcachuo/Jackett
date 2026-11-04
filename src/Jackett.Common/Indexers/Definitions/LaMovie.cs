@@ -270,84 +270,80 @@ namespace Jackett.Common.Indexers.Definitions
 
                 if (!isLatest)
                 {
-                    // Resolve TMDB translation first so the API search can be done in Spanish.
-                    if (!tmdbTranslationAttempted || string.IsNullOrWhiteSpace(tmdbTranslatedTitle))
-                    {
-                        tmdbTranslationAttempted = true;
+                    var attemptedTerms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-                        // Use original query term (before truncation) for TMDB search
-                        var originalTerm = query.GetQueryString()?.Trim();
-                        if (!string.IsNullOrWhiteSpace(originalTerm))
+                    async Task SearchWithTermsAsync(IEnumerable<string> terms)
+                    {
+                        foreach (var term in terms)
                         {
-                            // Remove episode patterns and year for TMDB search
-                            originalTerm = Regex.Replace(originalTerm, @"\s+[Ss]\d{1,2}[Ee]\d{1,2}$", "").Trim();
-                            originalTerm = Regex.Replace(originalTerm, @"\s+\d{1,2}[xX]\d{1,2}$", "").Trim();
-                            if (searchYear.HasValue)
+                            if (pageReleases.Any() || !attemptedTerms.Add(term))
                             {
-                                originalTerm = originalTerm.Replace(searchYear.Value.ToString(), "").Trim();
+                                continue;
+                            }
+
+                            var searchUrl = string.Format(_searchUrl, postType) + $"&q={Uri.EscapeDataString(term)}";
+                            var response = await RequestWithCookiesAndRetryAsync(
+                                searchUrl, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
+                                headers: _headers);
+
+                            // Check if API returned error
+                            if (response.ContentString.Contains("\"error\":true"))
+                            {
+                                continue; // Try next fallback term
+                            }
+
+                            var originalTermForFilter = !string.IsNullOrWhiteSpace(tmdbTranslatedTitle) &&
+                                                        term.Equals(tmdbTranslatedTitle, StringComparison.OrdinalIgnoreCase)
+                                ? tmdbTranslatedTitle
+                                : rawSearchTermForFilter;
+                            pageReleases = await ParseReleasesAsync(response, queryForFilters, isLatest, term, originalTermForFilter, searchYear);
+                        }
+                    }
+
+                    // Progressive fallback strategy for title matching: search the raw
+                    // term first; only translate to Spanish via TMDB if it yields nothing.
+                    await SearchWithTermsAsync(GetProgressiveFallbackTerms(rawSearchTerm));
+
+                    if (!pageReleases.Any())
+                    {
+                        // Resolve TMDB translation lazily so the API search can be done in Spanish.
+                        if (!tmdbTranslationAttempted || string.IsNullOrWhiteSpace(tmdbTranslatedTitle))
+                        {
+                            tmdbTranslationAttempted = true;
+
+                            // Use original query term (before truncation) for TMDB search
+                            var originalTerm = query.GetQueryString()?.Trim();
+                            if (!string.IsNullOrWhiteSpace(originalTerm))
+                            {
+                                // Remove episode patterns and year for TMDB search
+                                originalTerm = Regex.Replace(originalTerm, @"\s+[Ss]\d{1,2}[Ee]\d{1,2}$", "").Trim();
+                                originalTerm = Regex.Replace(originalTerm, @"\s+\d{1,2}[xX]\d{1,2}$", "").Trim();
+                                if (searchYear.HasValue)
+                                {
+                                    originalTerm = originalTerm.Replace(searchYear.Value.ToString(), "").Trim();
+                                }
+                            }
+
+                            var tmdbTranslation = await GetSpanishTitleFromTmdb(originalTerm ?? rawSearchTerm, searchYear, postType);
+                            tmdbTranslatedTitle = tmdbTranslation?.Title;
+                            tmdbMatchedYear = tmdbTranslation?.Year;
+                            if (!string.IsNullOrWhiteSpace(tmdbTranslatedTitle))
+                            {
+                                logger.Info($"TMDB translated '{rawSearchTerm}' to '{tmdbTranslatedTitle}'");
+                                // Only adopt the TMDB year when the translation actually changed the title;
+                                // an identical title may be a different movie and its year would poison the filter
+                                if (!searchYear.HasValue && tmdbMatchedYear.HasValue &&
+                                    !tmdbTranslatedTitle.Equals(rawSearchTerm, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    searchYear = tmdbMatchedYear;
+                                    rawSearchTermForFilter = $"{rawSearchTermForFilter} {searchYear.Value}".Trim();
+                                }
                             }
                         }
 
-                        var tmdbTranslation = await GetSpanishTitleFromTmdb(originalTerm ?? rawSearchTerm, searchYear, postType);
-                        tmdbTranslatedTitle = tmdbTranslation?.Title;
-                        tmdbMatchedYear = tmdbTranslation?.Year;
                         if (!string.IsNullOrWhiteSpace(tmdbTranslatedTitle))
                         {
-                            logger.Info($"TMDB translated '{rawSearchTerm}' to '{tmdbTranslatedTitle}'");
-                            // Only adopt the TMDB year when the translation actually changed the title;
-                            // an identical title may be a different movie and its year would poison the filter
-                            if (!searchYear.HasValue && tmdbMatchedYear.HasValue &&
-                                !tmdbTranslatedTitle.Equals(rawSearchTerm, StringComparison.OrdinalIgnoreCase))
-                            {
-                                searchYear = tmdbMatchedYear;
-                                rawSearchTermForFilter = $"{rawSearchTermForFilter} {searchYear.Value}".Trim();
-                            }
-                        }
-                    }
-
-                    // Progressive fallback strategy for title matching:
-                    // 1. Try full search term
-                    // 2. If no results, try first 2 words
-                    // 3. If still no results, try first word only
-                    // This allows matching English titles against Spanish content using original_title field
-                    var searchTerms = !string.IsNullOrWhiteSpace(tmdbTranslatedTitle)
-                        ? GetProgressiveFallbackTerms(tmdbTranslatedTitle)
-                        : GetProgressiveFallbackTerms(rawSearchTerm);
-                    if (!string.IsNullOrWhiteSpace(tmdbTranslatedTitle) &&
-                        !tmdbTranslatedTitle.Equals(rawSearchTerm, StringComparison.OrdinalIgnoreCase))
-                    {
-                        var rawTerms = GetProgressiveFallbackTerms(rawSearchTerm);
-                        foreach (var rawTerm in rawTerms)
-                        {
-                            if (!searchTerms.Any(term => term.Equals(rawTerm, StringComparison.OrdinalIgnoreCase)))
-                            {
-                                searchTerms.Add(rawTerm);
-                            }
-                        }
-                    }
-
-                    foreach (var term in searchTerms)
-                    {
-                        var searchUrl = string.Format(_searchUrl, postType) + $"&q={Uri.EscapeDataString(term)}";
-                        var response = await RequestWithCookiesAndRetryAsync(
-                            searchUrl, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
-                            headers: _headers);
-
-                        // Check if API returned error
-                        if (response.ContentString.Contains("\"error\":true"))
-                        {
-                            continue; // Try next fallback term
-                        }
-
-                        var originalTermForFilter = !string.IsNullOrWhiteSpace(tmdbTranslatedTitle) &&
-                                                    term.Equals(tmdbTranslatedTitle, StringComparison.OrdinalIgnoreCase)
-                            ? tmdbTranslatedTitle
-                            : rawSearchTermForFilter;
-                        pageReleases = await ParseReleasesAsync(response, queryForFilters, isLatest, term, originalTermForFilter, searchYear);
-
-                        if (pageReleases.Any())
-                        {
-                            break; // Found results, stop trying
+                            await SearchWithTermsAsync(GetProgressiveFallbackTerms(tmdbTranslatedTitle));
                         }
                     }
                 }
