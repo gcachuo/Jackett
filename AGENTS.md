@@ -91,10 +91,10 @@ Gotchas:
 - Enhanced logs for debugging: run with `-t -l` or enable in the UI; logs land
   in the config dir (`data-dev/` for the dev container).
 
-## Indexers custom en este fork
+## Custom indexers in this fork
 
-- `LaMovie.cs` — wp-api JSON de lamovie.org; emite magnets + hoster links crudos (tag hoster en título).
-- `Cinecalidad.cs` — HTML scraping; Link=ficha, magnet resuelto perezosamente en `Download()`.
-- `PelisPanda.cs` — mismo estilo que cinecalidad.
-- `MundoToon.cs` — scraping de mundotoon.com; sigue el botón "ver enlaces" (`a.imgb_pub`) al paste en todopaste.com y emite los `/go/<token>` como links crudos (hoster desde el `img` del anchor: Mega.webp/Mediafire.webp/Gdrive.webp). El countdown del `/go/` lo resuelve webdl-bridge, no el indexer. Title-matching laxo (≥60% palabras contra el query, el título TMDB es-MX o las primeras 2 palabras) porque TMDB es-MX difiere de los títulos del sitio. Sin fallback al 1er resultado: el `?s=` del sitio devuelve posts irrelevantes incluso como único hit (2026-11-05: `Bratz Rock Angelz` devolvía `Mi villano favorito 3`).
-- Indexers nuevos se configuran creando `data-dev/Indexers/<id>.json` (copiar formato de lamovie.json) y reiniciando `jackett-dev`; el POST `/api/v2.0/indexers/<id>/config` pide sesión admin (302), no apikey.
+- `LaMovie.cs` — wp-api JSON from lamovie.org; emits magnets + raw hoster links (hoster tag in title).
+- `Cinecalidad.cs` — HTML scraping; Link=post page, magnet resolved lazily in `Download()`.
+- `PelisPanda.cs` — same pattern as cinecalidad.
+- `MundoToon.cs` — scrapes mundotoon.com; follows the "ver enlaces" button (`a.imgb_pub`) to the todopaste.com paste and emits the `/go/<token>` links raw (hoster from the anchor's `img`: Mega.webp/Mediafire.webp/Gdrive.webp). The `/go/` countdown is resolved by webdl-bridge, not the indexer. Lax title-matching (≥60% of words against the query, the TMDB es-MX title, or the first 2 words) because TMDB es-MX differs from the site's titles. No first-result fallback: the site's `?s=` returns irrelevant posts even as the only hit (2026-11-05: `Bratz Rock Angelz` returned `Mi villano favorito 3`).
+- New indexers are configured by creating `data-dev/Indexers/<id>.json` (copy the lamovie.json format) and restarting `jackett-dev`; POST `/api/v2.0/indexers/<id>/config` requires an admin session (302), not an apikey.
