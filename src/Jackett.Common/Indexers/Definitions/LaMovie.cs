@@ -543,6 +543,23 @@ namespace Jackett.Common.Indexers.Definitions
 
                     var episodePart = downloadUrl.Episode != null ? $"{downloadUrl.Episode}." : "";
 
+                    // Non-magnet links are web downloads (1fichier, mega, mediafire, ...);
+                    // tag the hoster in the title so consumers like debrid services can route them
+                    var isMagnet = downloadUrl.Url.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase);
+                    string hoster = null;
+                    if (!isMagnet && Uri.TryCreate(downloadUrl.Url, UriKind.Absolute, out var downloadUri))
+                    {
+                        var host = downloadUri.Host;
+                        hoster = host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? host.Substring(4) : host;
+                        var dotIndex = hoster.IndexOf('.');
+                        if (dotIndex > 0)
+                        {
+                            hoster = hoster.Substring(0, dotIndex);
+                        }
+
+                        hoster = hoster.ToUpperInvariant();
+                    }
+
                     //Radarr parsing
                     var quality = Regex.Replace(
                         downloadUrl.Quality.ToUpper(),
@@ -570,7 +587,7 @@ namespace Jackett.Common.Indexers.Definitions
                         Guid = uriMagnet,
                         Details = details,
                         MagnetUri = uriMagnet,
-                        Title = $"{post.Title}.{episodePart}{quality}.{language}-LaMovie",
+                        Title = $"{post.Title}.{episodePart}{quality}.{language}{(hoster != null ? $".{hoster}" : "")}-LaMovie",
                         Category = categories,
                         Poster = new($"{SiteLink}wp-content/uploads{post.Images.Poster}"),
                         Year = year != null ? long.Parse(year) : DateTime.Now.Year,
@@ -1191,7 +1208,7 @@ namespace Jackett.Common.Indexers.Definitions
                 playerUrl, cookieOverride: CookieHeader, method: RequestType.GET, referer: SiteLink, data: null,
                 headers: _headers);
             var playerResponse = JsonSerializer.Deserialize<PlayerResponse>(response.ContentString);
-            return playerResponse?.Data?.Downloads?.Where(x => x.Url.StartsWith("magnet:?xt=")).ToList() ??
+            return playerResponse?.Data?.Downloads?.Where(x => !string.IsNullOrWhiteSpace(x.Url)).ToList() ??
                    new List<Download>();
         }
 
