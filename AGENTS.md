@@ -90,3 +90,11 @@ Gotchas:
 - Validate YAML with yamllint (`yamllint.yml` in repo root).
 - Enhanced logs for debugging: run with `-t -l` or enable in the UI; logs land
   in the config dir (`data-dev/` for the dev container).
+
+## Indexers custom en este fork
+
+- `LaMovie.cs` — wp-api JSON de lamovie.org; emite magnets + hoster links crudos (tag hoster en título).
+- `Cinecalidad.cs` — HTML scraping; Link=ficha, magnet resuelto perezosamente en `Download()`.
+- `PelisPanda.cs` — mismo estilo que cinecalidad.
+- `MundoToon.cs` — scraping de mundotoon.com; sigue el botón "ver enlaces" (`a.imgb_pub`) al paste en todopaste.com y emite los `/go/<token>` como links crudos (hoster desde el `img` del anchor: Mega.webp/Mediafire.webp/Gdrive.webp). El countdown del `/go/` lo resuelve webdl-bridge, no el indexer. Title-matching laxo (≥60% palabras o 1er resultado del sitio) porque TMDB es-MX difiere de los títulos del sitio.
+- Indexers nuevos se configuran creando `data-dev/Indexers/<id>.json` (copiar formato de lamovie.json) y reiniciando `jackett-dev`; el POST `/api/v2.0/indexers/<id>/config` pide sesión admin (302), no apikey.
