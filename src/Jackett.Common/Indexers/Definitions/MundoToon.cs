@@ -166,15 +166,13 @@ namespace Jackett.Common.Indexers.Definitions
                             continue;
                         }
 
-                        if (isSearch && !TitleMatches(searchTerm, p.Title))
+                        if (isSearch && !searchTerms.Any(term => TitleMatches(term, p.Title)))
                         {
-                            // Trust the site's own ranking: keep the first result of each
-                            // search page even when the localized query differs from the
-                            // site's title (e.g. "Futuro" vs "Future").
-                            if (!p.Link.Equals(postsToFetch.First().Link, StringComparison.OrdinalIgnoreCase))
-                            {
-                                continue;
-                            }
+                            // The site's search leaks unrelated posts even as the only
+                            // hit, so ranking can't be trusted; the title must match the
+                            // query or one of its variants (TMDB es-MX title, first
+                            // words) on its own.
+                            continue;
                         }
 
                         var isMovie = p.Type.IndexOf("película", StringComparison.OrdinalIgnoreCase) >= 0 ||
