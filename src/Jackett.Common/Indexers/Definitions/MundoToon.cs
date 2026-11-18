@@ -85,7 +85,7 @@ namespace Jackett.Common.Indexers.Definitions
                 var cleaned = Regex.Replace(searchTerm, @"\s+[Ss]\d{1,2}([Ee]\d{1,2})?$", "").Trim();
                 cleaned = Regex.Replace(cleaned, @"\b(19\d{2}|20\d{2})\b", "").Trim();
                 searchTerms.Add(cleaned);
-                var words = cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var words = cleaned.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                 if (words.Length > 2)
                 {
                     searchTerms.Add(string.Join(" ", words.Take(2)));
