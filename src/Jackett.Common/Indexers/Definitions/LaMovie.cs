@@ -1294,16 +1294,39 @@ namespace Jackett.Common.Indexers.Definitions
             public string Url { get; set; }
 
             [JsonPropertyName("quality")]
+            [JsonConverter(typeof(FlexibleStringConverter))]
             public string Quality { get; set; }
 
             [JsonPropertyName("lang")]
+            [JsonConverter(typeof(FlexibleStringConverter))]
             public string Language { get; set; }
 
             [JsonPropertyName("size")]
+            [JsonConverter(typeof(FlexibleStringConverter))]
             public string Size { get; set; }
 
             [JsonPropertyName("episode")]
+            [JsonConverter(typeof(FlexibleStringConverter))]
             public string Episode { get; set; }
+        }
+
+        private sealed class FlexibleStringConverter : JsonConverter<string>
+        {
+            public override string Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+                reader.TokenType switch
+                {
+                    JsonTokenType.String => reader.GetString(),
+                    JsonTokenType.Number => reader.TryGetInt64(out var l)
+                        ? l.ToString(CultureInfo.InvariantCulture)
+                        : reader.GetDouble().ToString(CultureInfo.InvariantCulture),
+                    JsonTokenType.True => "true",
+                    JsonTokenType.False => "false",
+                    JsonTokenType.Null => null,
+                    _ => JsonDocument.ParseValue(ref reader).RootElement.ToString()
+                };
+
+            public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options) =>
+                writer.WriteStringValue(value);
         }
 
         private class TmdbCacheEntry
